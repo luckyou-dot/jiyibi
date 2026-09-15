@@ -67,6 +67,12 @@ enum class UnifiedCardVariant {
  * @param variant 视觉变体，默认 [UnifiedCardVariant.ELEVATED]
  * @param cornerRadius 圆角半径，默认 [Corner.large]
  * @param contentPadding 内容内边距，默认 [Spacing.l]
+ * @param tonalElevation 仅 [UnifiedCardVariant.ELEVATED] 生效的色调高度。
+ *        注意：Material 3 会在 surface 上按此叠加 surfaceTint（约 `(4.5·ln(e+1)+2)%`，
+ *        即 1dp ≈ 5%），**卡片的实际底色并不等于 `colorScheme.surface`**。
+ *        当卡片内部需要自绘不透明背景（如左滑删除的行）时，
+ *        必须把本参数设为 `0.dp`，否则内层背景与外层卡片会产生可见色差。
+ *        默认 `1.dp` 维持原有观感，立体感由 `shadowElevation` 保留。
  * @param content 卡片内容（ColumnScope）
  */
 @Composable
@@ -75,6 +81,7 @@ fun UnifiedCard(
     variant: UnifiedCardVariant = UnifiedCardVariant.ELEVATED,
     cornerRadius: Dp = Corner.large,
     contentPadding: PaddingValues = PaddingValues(Spacing.l),
+    tonalElevation: Dp = 1.dp,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val shape = RoundedCornerShape(cornerRadius)
@@ -84,7 +91,7 @@ fun UnifiedCard(
                 modifier = modifier,
                 shape = shape,
                 color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 1.dp,
+                tonalElevation = tonalElevation,
                 shadowElevation = 2.dp,
             ) {
                 Column(modifier = Modifier.padding(contentPadding), content = content)

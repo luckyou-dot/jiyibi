@@ -230,7 +230,7 @@ fun HomeScreen(
                             ) { row, content ->
                                 SwipeToDeleteItem(
                                     onDelete = { viewModel.delete(row.tx.id) },
-                                    backgroundCorner = Corner.small,
+                                    backgroundCorner = 0.dp,
                                 ) {
                                     content()
                                 }

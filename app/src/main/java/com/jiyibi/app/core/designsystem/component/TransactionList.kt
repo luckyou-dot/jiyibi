@@ -152,13 +152,18 @@ fun TransactionRow(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            // 先铺一层不透明 surface 背景再挂 clickable/padding：
-            // SwipeToDismissBox 的红色删除底层位于 content 之下，而本行只有文字没有
-            // 背景色，垂直 padding 区域就会透出红色，观感上像给每行套了个红框。
-            // 这里主动把行画成不透明，红色就只在真正左滑时露出。
+            // 行的不透明背景：SwipeToDismissBox 的红色删除底层恒位于 content 之下，
+            // 行若没有自己的背景色，其 padding 区域就会透出红色。
+            //
+            // 两个必须遵守的约束（否则会出现「左右侧边颜色与卡片不符」的色带）：
+            // 1. 水平 padding 必须放在 background **之后** —— 这样背景铺满整行宽度，
+            //    红色左滑时也就能铺满，不会在两端留出缺口；
+            // 2. 外层 TransactionDayCard 必须用 tonalElevation = 0.dp 建卡 ——
+            //    Material 3 的 Surface 会按 tonalElevation 在 surface 上叠加
+            //    约 5% 的 surfaceTint，卡片实际底色并不等于本行的纯 surface。
             .background(MaterialTheme.colorScheme.surface)
             .clickable(onClick = onClick)
-            .padding(vertical = Spacing.m),
+            .padding(horizontal = Spacing.m, vertical = Spacing.m),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // 分类圆形图标
@@ -214,14 +219,24 @@ fun TransactionDayCard(
         modifier = modifier.fillMaxWidth(),
         variant = UnifiedCardVariant.ELEVATED,
         cornerRadius = Corner.large,
-        contentPadding = PaddingValues(horizontal = Spacing.m),
+        // 卡片自身不留内边距 → 每行的红色删除底层能铺满卡片整宽，左滑时不会在两端留缺口。
+        // 左右留白改由 TransactionRow 内部承担（见其 background 处的注释）。
+        contentPadding = PaddingValues(0.dp),
+        // 0.dp 让卡片底色精确等于 colorScheme.surface，与 TransactionRow 的背景一致。
+        // 若沿用默认的 1.dp，Material 3 会叠加约 5% 的 surfaceTint，
+        // 行的左右两侧就会各露出约 12dp、色调不同的色带。立体感由 shadowElevation 保留。
+        tonalElevation = 0.dp,
     ) {
         group.rows.forEachIndexed { index, row ->
             wrapRow(row) {
                 TransactionRow(row = row, onClick = { onRowClick(row.tx.id) })
             }
             if (index != group.rows.lastIndex) {
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                // 分隔线左右缩进，与行内容对齐（行内已有 Spacing.m 的水平 padding）
+                HorizontalDivider(
+                    modifier = Modifier.padding(horizontal = Spacing.m),
+                    color = MaterialTheme.colorScheme.outlineVariant,
+                )
             }
         }
     }
