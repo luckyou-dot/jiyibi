@@ -8,6 +8,7 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -109,9 +110,13 @@ fun JiYiBiTheme(
  * 便捷函数：返回当前主题对应的线性渐变 Brush。
  *
  * 起止色取自 [LocalGradientColors]，需在 [JiYiBiTheme] 内部调用。
+ * 结果按 [colors] 做 `remember` 缓存——若每次重组都新建 Brush 实例，
+ * 调用点 `.background(brush)` 会因参数变化而重复触发绘制。
  */
 @Composable
 fun gradientBrush(): Brush {
     val colors = LocalGradientColors.current
-    return Brush.linearGradient(colors = listOf(colors.start, colors.end))
+    return remember(colors) {
+        Brush.linearGradient(colors = listOf(colors.start, colors.end))
+    }
 }

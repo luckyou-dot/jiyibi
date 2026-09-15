@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Feedback
 import androidx.compose.material.icons.filled.Handshake
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Payment
 import androidx.compose.material.icons.filled.Repeat
@@ -98,6 +99,7 @@ fun SettingsScreen(
     onOpenBackup: () -> Unit,
     onOpenAbout: () -> Unit,
     onOpenFeedback: () -> Unit,
+    onOpenAutoRecord: () -> Unit,
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val board by viewModel.assetBoard.collectAsStateWithLifecycle()
@@ -216,25 +218,32 @@ fun SettingsScreen(
                             modifier = Modifier.listItemEnterAnimation(0),
                         )
                         ClickableItem(
+                            icon = Icons.Filled.NotificationsActive,
+                            title = "自动记账",
+                            subtitle = "监听微信 / 支付宝支付通知自动记录",
+                            onClick = onOpenAutoRecord,
+                            modifier = Modifier.listItemEnterAnimation(1),
+                        )
+                        ClickableItem(
                             icon = Icons.Filled.Payment,
                             title = "默认账户",
                             subtitle = defaultAccountSubtitle(expenseAccountName, incomeAccountName),
                             onClick = { showDefaultAccountPicker = true },
-                            modifier = Modifier.listItemEnterAnimation(1),
+                            modifier = Modifier.listItemEnterAnimation(2),
                         )
                         ClickableItem(
                             icon = Icons.Filled.Repeat,
                             title = "周期与借贷",
                             subtitle = "周期性记账与借贷记录",
                             onClick = { showRecurringDebtPicker = true },
-                            modifier = Modifier.listItemEnterAnimation(2),
+                            modifier = Modifier.listItemEnterAnimation(3),
                         )
                         ClickableItem(
                             icon = Icons.AutoMirrored.Filled.Label,
                             title = "标签管理",
                             subtitle = "管理自定义标签",
                             onClick = onNavigateTagManage,
-                            modifier = Modifier.listItemEnterAnimation(3),
+                            modifier = Modifier.listItemEnterAnimation(4),
                         )
                     }
                 }

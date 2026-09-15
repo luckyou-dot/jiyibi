@@ -14,8 +14,8 @@ android {
         applicationId = "com.jiyibi.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.0.1"
+        versionCode = 3
+        versionName = "1.02"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
@@ -24,6 +24,9 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            // 本地性能对比用：复用 debug 签名，便于直接覆盖安装已装的 debug 包（数据保留）。
+            // 注意：正式发布前必须替换为自有 release keystore。
+            signingConfig = signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

@@ -30,6 +30,9 @@ object Routes {
     /** 标签管理（二级页，挂在 settings 下） */
     const val TAG_MANAGE = "tag_manage"
 
+    /** 自动记账（通知监听，二级页，挂在 settings 下） */
+    const val AUTO_RECORD = "settings/auto_record"
+
     /** 备份与导出（二级页，挂在 settings 下） */
     const val BACKUP = "settings/backup"
 

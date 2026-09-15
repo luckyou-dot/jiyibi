@@ -4,6 +4,8 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jiyibi.app.core.data.repository.AccountPreferencesRepository
+import com.jiyibi.app.core.data.repository.AutoRecordPreferencesRepository
+import com.jiyibi.app.core.data.repository.MerchantCategoryRepository
 import com.jiyibi.app.core.domain.model.Account
 import com.jiyibi.app.core.domain.model.Category
 import com.jiyibi.app.core.domain.model.CategoryKind
@@ -24,6 +26,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -37,6 +40,8 @@ class TransactionEditViewModel @Inject constructor(
     private val recurringRepository: RecurringRepository,
     private val ocrHandler: OcrResultHandler,
     private val accountPreferencesRepository: AccountPreferencesRepository,
+    private val autoRecordPreferences: AutoRecordPreferencesRepository,
+    private val merchantCategoryRepository: MerchantCategoryRepository,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
 
@@ -154,6 +159,7 @@ class TransactionEditViewModel @Inject constructor(
                 val old = editingTransaction.value
                 if (old != null) {
                     reverseAccountEffect(old)
+                    learnCategoryIfCorrected(old, transaction)
                 }
             }
             // 保存交易
@@ -162,6 +168,29 @@ class TransactionEditViewModel @Inject constructor(
             applyAccountEffect(transaction)
             onDone()
         }
+    }
+
+    /**
+     * 学习分类纠正：当用户修改了**自动记账产生的**交易分类时，把
+     * 「商户名 → 新分类 id」记入学习表，下次同商户出现时直接采用。
+     *
+     * 三个约束：
+     * 1. 只对**自动记账队列里的**交易学习。手动记账的备注是用户自由文本，
+     *    拿它当商户 key 会让学习表被一次性文案充满，没有泛化价值。
+     * 2. 只在分类**确实变化**时写入，避免每次编辑备注都覆盖一遍学习表。
+     * 3. 备注也被改了的话，说明用户认为原来的商户名识别有误，此时不学习
+     *    （否则会把错误商户名固化下来）。分类清空（设为未分类）也会学习，
+     *    由 [MerchantCategoryRepository.learn] 写成墓碑记录。
+     */
+    private suspend fun learnCategoryIfCorrected(old: Transaction, new: Transaction) {
+        if (old.categoryId == new.categoryId) return
+        if (old.note != new.note) return
+
+        // 只对自动记账产生的交易学习：复核队列里能查到才说明来源是通知
+        val isAutoRecorded = autoRecordPreferences.recentIds.first().contains(old.id)
+        if (!isAutoRecorded) return
+
+        merchantCategoryRepository.learn(old.note, new.categoryId)
     }
 
     /** 应用交易对账户余额的影响 */

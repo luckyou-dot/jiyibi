@@ -2,6 +2,9 @@ package com.jiyibi.app.ui.search
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.jiyibi.app.core.common.TransactionDayGroup
+import com.jiyibi.app.core.common.TransactionRowUi
+import com.jiyibi.app.core.common.buildDayGroups
 import com.jiyibi.app.core.domain.model.Account
 import com.jiyibi.app.core.domain.model.Category
 import com.jiyibi.app.core.domain.model.Transaction
@@ -36,10 +39,15 @@ data class SearchFilters(
     val types: Set<TransactionType> = emptySet(),
 )
 
-/** 搜索页 UI 状态 */
+/**
+ * 搜索页 UI 状态。
+ *
+ * @property resultGroups 搜索结果，**已按天分组**（与首页「最近交易」同一套结构），
+ *                        每组带当天出/入合计
+ */
 data class SearchUiState(
     val filters: SearchFilters = SearchFilters(),
-    val results: List<Transaction> = emptyList(),
+    val resultGroups: List<TransactionDayGroup> = emptyList(),
     val categories: List<Category> = emptyList(),
     val accounts: List<Account> = emptyList(),
     val existingTags: List<String> = emptyList(),
@@ -94,7 +102,25 @@ class SearchViewModel @Inject constructor(
                     .filterBy(filters.accountIds) { it.accountId }
                     .filterByTags(filters.tags)
                     .filterByTypes(filters.types)
-                SearchUiState(filters, filtered, categories, accounts, tags, false)
+
+                // 关联分类与账户名后按天分组，交给与首页共用的列表组件渲染
+                val categoryMap = categories.associateBy { it.id }
+                val accountMap = accounts.associateBy { it.id }
+                val rows = filtered.map { tx ->
+                    TransactionRowUi(
+                        tx = tx,
+                        category = tx.categoryId?.let { categoryMap[it] },
+                        accountName = accountMap[tx.accountId]?.name.orEmpty(),
+                    )
+                }
+                SearchUiState(
+                    filters = filters,
+                    resultGroups = buildDayGroups(rows),
+                    categories = categories,
+                    accounts = accounts,
+                    existingTags = tags,
+                    isLoading = false,
+                )
             }
         }
         .stateIn(

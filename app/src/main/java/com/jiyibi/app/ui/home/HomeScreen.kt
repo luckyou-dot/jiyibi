@@ -1,11 +1,7 @@
 package com.jiyibi.app.ui.home
 
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,17 +13,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
@@ -52,14 +44,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
-import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -72,9 +57,10 @@ import com.jiyibi.app.core.designsystem.component.EmptyState
 import com.jiyibi.app.core.designsystem.component.GlassCard
 import com.jiyibi.app.core.designsystem.component.Spacing
 import com.jiyibi.app.core.designsystem.component.SwipeToDeleteItem
+import com.jiyibi.app.core.designsystem.component.TransactionDayCard
+import com.jiyibi.app.core.designsystem.component.TransactionDayHeader
 import com.jiyibi.app.core.designsystem.component.UnifiedCard
 import com.jiyibi.app.core.designsystem.component.UnifiedCardVariant
-import com.jiyibi.app.core.designsystem.component.categoryIconByKey
 import com.jiyibi.app.core.designsystem.theme.BudgetAmber
 import com.jiyibi.app.core.designsystem.theme.ExpenseRed
 import com.jiyibi.app.core.designsystem.theme.IncomeGreen
@@ -100,6 +86,8 @@ fun HomeScreen(
     viewModel: HomeViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    // 热力图弹窗详情单独订阅：点击格子只影响 BottomSheet，不触发首页主体重组
+    val heatmapDetail by viewModel.heatmapDetail.collectAsStateWithLifecycle()
     var showDatePicker by remember { mutableStateOf(false) }
 
     // 计算 5 个 Pill 对应的日期范围，用于选中态判定与 SummaryCard 标题
@@ -199,15 +187,10 @@ fun HomeScreen(
                 // 收支概览卡：本月收入 / 本月支出
                 item { IncomeExpenseCard(state) }
                 // 当月日历热力图：颜色深浅 = 当日支出强度
+                // 峰值日已由 ViewModel 随单元格一起算好，此处不再重复聚合
                 item {
-                    // peakDay = 当月支出最强的那一天（amount > 0）
-                    val peakDay = state.monthHeatmap
-                        .filter { it.amount > 0 }
-                        .maxByOrNull { it.amount }
-                        ?.let { it.day to it.amount }
                     HeatmapCard(
-                        cells = state.monthHeatmap,
-                        peakDay = peakDay,
+                        heatmap = state.monthHeatmap,
                         onCellClick = { viewModel.selectHeatmapDay(it) },
                     )
                 }
@@ -224,7 +207,7 @@ fun HomeScreen(
                         TextButton(onClick = onOpenSearch) { Text("查看全部") }
                     }
                 }
-                if (state.recent.isEmpty()) {
+                if (state.recentGroups.isEmpty()) {
                     item {
                         EmptyState(
                             icon = Icons.AutoMirrored.Filled.ReceiptLong,
@@ -235,9 +218,23 @@ fun HomeScreen(
                         )
                     }
                 } else {
-                    itemsIndexed(state.recent, key = { _, item -> item.tx.id }) { index, item ->
-                        SwipeToDeleteItem(onDelete = { viewModel.delete(item.tx.id) }) {
-                            RecentItem(item, onEditTransaction, index)
+                    // 按天分组渲染：日头（日期 + 当天出入合计）+ 当天交易卡
+                    state.recentGroups.forEach { group ->
+                        item(key = "day-${group.dayStart}") {
+                            TransactionDayHeader(group = group)
+                        }
+                        item(key = "card-${group.dayStart}") {
+                            TransactionDayCard(
+                                group = group,
+                                onRowClick = onEditTransaction,
+                            ) { row, content ->
+                                SwipeToDeleteItem(
+                                    onDelete = { viewModel.delete(row.tx.id) },
+                                    backgroundCorner = Corner.small,
+                                ) {
+                                    content()
+                                }
+                            }
                         }
                     }
                 }
@@ -273,18 +270,22 @@ fun HomeScreen(
     }
 
     // 热力图单元格点击弹窗：显示当日交易明细
-    if (state.selectedHeatmapDay != null) {
+    // 只依赖 heatmapDetail，点击格子不会导致首页主体重组
+    val selectedHeatmapDay = heatmapDetail.selectedDay
+    val dayTransactions = heatmapDetail.dayTransactions
+    if (selectedHeatmapDay != null) {
+        val sheetDateFormat = remember { SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()) }
         ModalBottomSheet(onDismissRequest = { viewModel.selectHeatmapDay(null) }) {
             Column(Modifier.padding(16.dp).fillMaxWidth()) {
                 Text(
-                    "${state.selectedHeatmapDay?.let { SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(it)) }} 交易明细",
+                    "${sheetDateFormat.format(Date(selectedHeatmapDay))} 交易明细",
                     style = MaterialTheme.typography.titleMedium,
                 )
                 Spacer(Modifier.height(8.dp))
-                if (state.dayTransactions.isEmpty()) {
+                if (dayTransactions.isEmpty()) {
                     Text("当日无交易", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 } else {
-                    state.dayTransactions.forEach { tx ->
+                    dayTransactions.forEach { tx ->
                         val isIncome = tx.type == TransactionType.INCOME
                         val sign = if (isIncome) "+" else "-"
                         Row(
@@ -487,16 +488,19 @@ private fun IncomeExpenseCard(state: HomeUiState) {
  * - 末行不足 7 个时用 Spacer 占位保持网格对齐
  * - 点击单元格触发 [onCellClick]，由外部弹 BottomSheet 显示当日交易明细
  *
- * @param cells       单元格列表（按当月日序）
- * @param peakDay     支出最强的一天（day, amount），null 表示当月无支出
+ * 参数使用 [HeatmapUiState] 而非裸 `List` + `Pair`：裸 `List` 参数会被 Compose
+ * 判定为 unstable，导致本 Composable 无法 skip；包装类已标注 `@Immutable`。
+ *
+ * @param heatmap     热力图渲染数据（单元格 + 峰值日）
  * @param onCellClick 点击单元格回调，参数为当天 0 点 timestamp
  */
 @Composable
 private fun HeatmapCard(
-    cells: List<HeatmapCell>,
-    peakDay: Pair<Int, Long>?,
+    heatmap: HeatmapUiState,
     onCellClick: (Long) -> Unit,
 ) {
+    val cells = heatmap.cells
+    val peakDay = heatmap.peakDay
     UnifiedCard(
         modifier = Modifier.fillMaxWidth(),
         variant = UnifiedCardVariant.ELEVATED,
@@ -569,94 +573,7 @@ private fun heatmapColor(level: Int): Color = when (level) {
 }
 
 /**
- * 最近交易列表项：分类图标 + 备注/时间/账户/收支类型 + 金额。
- *
- * - 图标：使用分类自带的 icon key（找不到分类时降级为通用 Category 图标）
- * - 副标题：时间 · 账户名 · 收支类型，单行显示
- * - 金额：支出 -红 / 收入 +绿 / 转账 灰
- * - 入场动画：[listItemEnterAnimation] 淡入 + 上移，按 [index] 错开
- *
- * @param index 列表项位置，用于计算错开延迟
+ * 「最近交易」的行渲染已抽到共享组件 `TransactionRow` /
+ * `TransactionDayCard`（见 `core/designsystem/component/TransactionList.kt`），
+ * 首页与搜索页「查看全部」共用同一套实现，此处不再保留副本。
  */
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun RecentItem(
-    item: RecentTransactionItem,
-    onEditTransaction: (Long) -> Unit,
-    index: Int,
-) {
-    val tx = item.tx
-    val dateFormat = remember { SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()) }
-    val time = dateFormat.format(Date(tx.date))
-    val amountColor = when (tx.type) {
-        TransactionType.EXPENSE -> ExpenseRed
-        TransactionType.INCOME -> IncomeGreen
-        TransactionType.TRANSFER -> MaterialTheme.colorScheme.onSurfaceVariant
-    }
-    val sign = when (tx.type) {
-        TransactionType.EXPENSE -> "-"
-        TransactionType.INCOME -> "+"
-        TransactionType.TRANSFER -> ""
-    }
-    val typeLabel = when (tx.type) {
-        TransactionType.EXPENSE -> "支出"
-        TransactionType.INCOME -> "收入"
-        TransactionType.TRANSFER -> "转账"
-    }
-    val categoryIcon = item.category?.let { categoryIconByKey(it.icon) } ?: Icons.Filled.Category
-    // 分类色：color=0（透明黑）时回退到主色，避免图标不可见
-    val categoryColor = item.category?.let { cat ->
-        if (cat.color != 0) Color(cat.color) else MaterialTheme.colorScheme.primary
-    } ?: MaterialTheme.colorScheme.primary
-    UnifiedCard(
-        modifier = Modifier
-            .fillMaxWidth()
-            .combinedClickable(
-                onClick = { onEditTransaction(tx.id) },
-                onLongClick = { onEditTransaction(tx.id) },
-            ),
-        variant = UnifiedCardVariant.ELEVATED,
-        cornerRadius = Corner.large,
-        contentPadding = PaddingValues(Spacing.m),
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            // 分类图标：圆形背景 + 分类色 + 图标
-            Box(
-                modifier = Modifier
-                    .size(40.dp)
-                    .clip(CircleShape)
-                    .background(categoryColor.copy(alpha = 0.15f)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    categoryIcon,
-                    contentDescription = null,
-                    tint = categoryColor,
-                )
-            }
-            Spacer(Modifier.width(Spacing.m))
-            Column(modifier = Modifier.weight(1f)) {
-                // 行 1：备注（无备注时用分类名，再降级为收支类型）
-                Text(
-                    tx.note.ifBlank { item.category?.name ?: typeLabel },
-                    style = MaterialTheme.typography.bodyLarge,
-                    maxLines = 1,
-                )
-                // 行 2：时间 · 账户名 · 收支类型
-                Text(
-                    "$time · ${item.accountName} · $typeLabel",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                )
-            }
-            Text(
-                "$sign¥${tx.amount.centsToYuan().toPlainString()}",
-                color = amountColor,
-                style = MaterialTheme.typography.titleMedium,
-            )
-        }
-    }
-}

@@ -16,7 +16,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -117,7 +116,7 @@ fun UnifiedCard(
         UnifiedCardVariant.GLASS -> {
             val darkTheme = isSystemInDarkTheme()
             val isBlurSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-            // 背景半透明颜色：有 blur 时更通透，无 blur 降级时更不透明以保持可读性
+            // 背景半透明颜色：API 31+ 更通透（渐变背景透出更多），低版本降级时更不透明以保持可读性
             val bgColor = when {
                 darkTheme -> Color.Black.copy(alpha = 0.75f)
                 isBlurSupported -> Color.White.copy(alpha = 0.4f)
@@ -136,12 +135,15 @@ fun UnifiedCard(
                         }
                     ),
             ) {
-                // 背景层：半透明底色 + 模糊（仅 API 31+ 生效，低版本忽略）
-                // 模糊作用于背景层以避免内容文字被柔化
+                // 背景层：半透明底色。
+                // 说明：这里曾使用 Modifier.blur(15.dp) 追求毛玻璃效果，但该图层内只有一个纯色
+                // 矩形（bgColor），对纯色做高斯模糊输出仍是同一纯色，肉眼零差异；而 API 31+ 会真实
+                // 创建 RenderEffect 离屏图层，卡片位于 LazyColumn 中时滚动每帧都要重走该路径。
+                // 因此移除 blur：视觉不变、省掉一次离屏渲染。
+                // 若后续需要真毛玻璃，需改为模糊「背后的内容」（如自定义 GraphicsLayer 捕获或 Haze 库）。
                 Box(
                     modifier = Modifier
                         .matchParentSize()
-                        .then(if (isBlurSupported) Modifier.blur(15.dp) else Modifier)
                         .background(bgColor),
                 )
                 Column(modifier = Modifier.padding(contentPadding), content = content)

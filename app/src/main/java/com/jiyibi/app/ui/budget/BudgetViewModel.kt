@@ -3,6 +3,7 @@ package com.jiyibi.app.ui.budget
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jiyibi.app.core.common.TimeRange
+import com.jiyibi.app.core.data.DefaultBudgetProvisioner
 import com.jiyibi.app.core.domain.model.Budget
 import com.jiyibi.app.core.domain.model.Category
 import com.jiyibi.app.core.domain.repository.BudgetRepository
@@ -14,6 +15,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 
 /** 单个分类预算项，含已用金额与进度（used/amountLimit）。 */
 data class CategoryBudgetItem(
@@ -36,9 +38,18 @@ class BudgetViewModel @Inject constructor(
     private val budgetRepository: BudgetRepository,
     private val transactionRepository: TransactionRepository,
     private val categoryRepository: CategoryRepository,
+    private val defaultBudgetProvisioner: DefaultBudgetProvisioner,
 ) : ViewModel() {
 
     private val month = TimeRange.thisMonth()
+
+    init {
+        // 兜底：确保本月存在月度总预算（默认 ¥1200）。
+        // 正常已在 App 启动时预置，此处覆盖应用长期不重启时的跨月场景。
+        viewModelScope.launch {
+            defaultBudgetProvisioner.ensureCurrentMonthTotalBudget()
+        }
+    }
 
     val uiState: StateFlow<BudgetUiState> = combine(
         budgetRepository.observeActive(System.currentTimeMillis()),

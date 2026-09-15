@@ -27,6 +27,23 @@ interface TransactionDao {
     @Query("SELECT * FROM transactions WHERE id = :id")
     suspend fun getById(id: Long): TransactionEntity?
 
+    /**
+     * 按 id 批量取交易，供「自动记账」页展示最近自动记录。
+     *
+     * 用 suspend 一次性查询而非 Flow：调用方已持有 id 队列，列表内容变化由队列驱动。
+     */
+    @Query("SELECT * FROM transactions WHERE id IN (:ids) ORDER BY date DESC")
+    suspend fun getByIds(ids: List<Long>): List<TransactionEntity>
+
+    /**
+     * 统计指定金额在时间窗内的交易条数，用于通知去重。
+     *
+     * 同一条通知可能被系统重复投递（通知更新 / 重发），此时金额与 postTime 都相同，
+     * 命中即说明这笔已经记过，应跳过。
+     */
+    @Query("SELECT COUNT(*) FROM transactions WHERE amount = :amount AND date BETWEEN :from AND :to")
+    suspend fun countSameAmountInWindow(amount: Long, from: Long, to: Long): Int
+
     /** 指定时间范围内的交易，用于日/周/月/年统计与列表。 */
     @Query("SELECT * FROM transactions WHERE date BETWEEN :start AND :end ORDER BY date DESC")
     fun observeRange(start: Long, end: Long): Flow<List<TransactionEntity>>

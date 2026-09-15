@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.BreakfastDining
 import androidx.compose.material.icons.filled.Business
@@ -35,13 +36,13 @@ import androidx.compose.material.icons.filled.Subscriptions
 import androidx.compose.material.icons.filled.Work
 import androidx.compose.material.icons.filled.Savings
 import androidx.compose.material.icons.filled.AccountBalanceWallet
-import androidx.compose.material.icons.filled.TrendingUp
 import androidx.compose.material.icons.filled.Paid
 import androidx.compose.material.icons.filled.CurrencyExchange
 import androidx.compose.material.icons.filled.Redeem
 import androidx.compose.material.icons.filled.CardGiftcard
 import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.SwapHoriz
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -52,14 +53,21 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 /** 分类可选图标键名列表（用于分类管理图标选择网格） */
@@ -98,7 +106,7 @@ fun categoryIconByKey(key: String?): ImageVector = when (key) {
     "Undo" -> Icons.AutoMirrored.Filled.Undo
     "Savings" -> Icons.Filled.Savings
     "AccountBalanceWallet" -> Icons.Filled.AccountBalanceWallet
-    "TrendingUp" -> Icons.Filled.TrendingUp
+    "TrendingUp" -> Icons.AutoMirrored.Filled.TrendingUp
     "Paid" -> Icons.Filled.Paid
     "CurrencyExchange" -> Icons.Filled.CurrencyExchange
     "Redeem" -> Icons.Filled.Redeem
@@ -241,47 +249,96 @@ fun ErrorState(
 }
 
 /**
- * 左滑删除容器：左滑到阈值时触发 onDelete。
+ * 左滑删除容器：左滑到阈值时弹出确认框，用户确认后才真正删除。
  *
  * 背景显示红色 + 右侧删除图标，content 区域显示正常内容。
+ * 滑动越过阈值不会立即删除，而是让行回弹并弹出确认对话框，
+ * 避免误触导致数据丢失；用户点「删除」才回调 [onDelete]。
+ *
+ * @param onDelete 用户在确认框中点击「删除」后触发
+ * @param confirmTitle 确认框标题
+ * @param confirmMessage 确认框正文
+ * @param backgroundCorner 红色删除底层的圆角。外层是独立卡片时用 [Corner.large]；
+ *        被包在 [UnifiedCard] 内部做「一天一卡」分组列表时用 [Corner.small]，
+ *        否则大圆角会在卡片内显得突兀。
+ * @param modifier 外部修饰符
+ * @param content 列表项正常内容
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SwipeToDeleteItem(
     onDelete: () -> Unit,
     modifier: Modifier = Modifier,
+    confirmTitle: String = "确认删除",
+    confirmMessage: String = "删除后无法恢复，确定要删除这条记录吗？",
+    backgroundCorner: Dp = Corner.large,
     content: @Composable () -> Unit,
 ) {
-    // 左滑（EndToStart 方向）到达阈值时回调 onDelete
+    // 是否显示删除确认框
+    var showConfirm by remember { mutableStateOf(false) }
+
+    // 左滑（EndToStart 方向）越过阈值时不直接删除：弹出确认框并让行回弹
     val dismissState = rememberSwipeToDismissBoxState(
         confirmValueChange = { value ->
             if (value == SwipeToDismissBoxValue.EndToStart) {
-                onDelete()
-                true
-            } else {
-                false
+                showConfirm = true
             }
+            // 始终返回 false：行回弹到原位，等待用户在确认框中决定
+            false
         }
     )
+    // 只在真正滑动（或回弹中）时才画红色，静止时底层全透明。
+    // SwipeToDismissBox 的 backgroundContent 始终铺在 content 之下，若常驻红色，
+    // 只要行内容有任何未绘制区域（垂直 padding、圆角、透明背景）就会透出红边。
+    val showBackground by remember {
+        derivedStateOf {
+            dismissState.progress > 0.01f ||
+                dismissState.targetValue != SwipeToDismissBoxValue.Settled
+        }
+    }
     SwipeToDismissBox(
         state = dismissState,
         modifier = modifier,
         backgroundContent = {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clip(RoundedCornerShape(Corner.large))
-                    .background(MaterialTheme.colorScheme.error)
-                    .padding(horizontal = 16.dp),
-                contentAlignment = Alignment.CenterEnd,
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Delete,
-                    contentDescription = "删除",
-                    tint = MaterialTheme.colorScheme.onError,
-                )
+            if (showBackground) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(backgroundCorner))
+                        .background(MaterialTheme.colorScheme.error)
+                        .padding(horizontal = 16.dp),
+                    contentAlignment = Alignment.CenterEnd,
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Delete,
+                        contentDescription = "删除",
+                        tint = MaterialTheme.colorScheme.onError,
+                    )
+                }
             }
         },
         content = { content() },
     )
+
+    // 删除确认对话框
+    if (showConfirm) {
+        AlertDialog(
+            onDismissRequest = { showConfirm = false },
+            title = { Text(confirmTitle) },
+            text = { Text(confirmMessage) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showConfirm = false
+                        onDelete()
+                    },
+                ) {
+                    Text("删除", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showConfirm = false }) { Text("取消") }
+            },
+        )
+    }
 }

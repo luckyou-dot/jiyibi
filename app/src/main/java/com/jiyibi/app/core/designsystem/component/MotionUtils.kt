@@ -37,7 +37,9 @@ import kotlinx.coroutines.launch
  * 首次显示时直接以目标值呈现（无动画），后续每次 [targetValue] 变化都会
  * 以 [FastOutSlowInEasing] 缓动在 [durationMillis] 内过渡。
  *
- * 使用 `derivedStateOf` 确保仅在动画值变化时才触发重组，避免不必要的重组开销。
+ * 实现说明：动画值 `animatable.value` 在 Composable 体内直接读取，因此动画进行
+ * 期间本组件会逐帧重组（重组范围仅限组件自身，即一次 Text 调用与字符串格式化）。
+ * 这是数字滚动动效本身的必要代价，未使用 `derivedStateOf` 折叠。
  *
  * @param targetValue 目标数值
  * @param modifier 外部修饰符

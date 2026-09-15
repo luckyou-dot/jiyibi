@@ -1,9 +1,5 @@
 package com.jiyibi.app.ui.transaction
 
-import android.Manifest
-import android.content.pm.PackageManager
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -38,11 +34,8 @@ import androidx.compose.material.icons.automirrored.filled.Label
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Repeat
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.DropdownMenu
@@ -89,12 +82,9 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jiyibi.app.core.designsystem.component.Corner
@@ -135,7 +125,6 @@ private val HeroHeight = 280.dp
  * 新增/编辑交易页。
  *
  * 3-5 秒快速记账目标:金额输入框获得焦点、默认支出、分类快捷网格。
- * 拍照识别入口通过 OCR 把金额与分类自动填入。
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -244,60 +233,6 @@ fun TransactionEditScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val focusRequester = remember { FocusRequester() }
-    val focusManager = LocalFocusManager.current
-    val context = LocalContext.current
-
-    // OCR 识别中状态:用于显示 loading 对话框
-    var isOcrLoading by remember { mutableStateOf(false) }
-
-    // 拍照 launcher:TakePicturePreview 返回缩略图 Bitmap(无需 FileProvider)
-    val cameraLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.TakePicturePreview(),
-    ) { bitmap ->
-        if (bitmap == null) {
-            scope.launch { snackbarHostState.showSnackbar("已取消拍照") }
-            return@rememberLauncherForActivityResult
-        }
-        scope.launch {
-            isOcrLoading = true
-            try {
-                val result = viewModel.receiptOcr.recognize(bitmap)
-                // 金额:取识别到的最大值(单位:分)转成元填入
-                val maxCents = result.amounts.maxOrNull()
-                if (maxCents != null) {
-                    amountText = maxCents.centsToYuan().toPlainString()
-                }
-                // 分类猜测:从当前交易类型对应的分类列表中查找
-                val cats = if (currentType == TransactionType.INCOME) incomeCategories
-                           else expenseCategories
-                val guessedId = viewModel.receiptOcr.guessCategory(result.rawText, cats)
-                if (guessedId != null) {
-                    selectedCategoryId = guessedId
-                }
-                val msg = if (maxCents != null) {
-                    "已识别金额 ¥${maxCents.centsToYuan().toPlainString()}"
-                } else {
-                    "未识别到金额"
-                }
-                snackbarHostState.showSnackbar(msg)
-            } catch (e: Exception) {
-                snackbarHostState.showSnackbar("OCR 识别失败:${e.message ?: "未知错误"}")
-            } finally {
-                isOcrLoading = false
-            }
-        }
-    }
-
-    // 相机权限 launcher:授权后再启动拍照
-    val cameraPermissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission(),
-    ) { granted ->
-        if (granted) {
-            cameraLauncher.launch(null)
-        } else {
-            scope.launch { snackbarHostState.showSnackbar("需要相机权限才能拍照识别") }
-        }
-    }
 
     // 新建模式下,进入页面让金额输入框获得焦点
     SideEffect {
@@ -393,22 +328,6 @@ fun TransactionEditScreen(
                         onValueChange = { amountText = it.filter { ch -> ch.isDigit() || ch == '.' } },
                         label = { Text("金额") },
                         prefix = { Text("¥", color = MaterialTheme.colorScheme.primary) },
-                        trailingIcon = {
-                            IconButton(onClick = {
-                                // 申请相机权限 → 拍照 → OCR 识别 → 自动填入金额与分类
-                                if (ContextCompat.checkSelfPermission(
-                                        context,
-                                        Manifest.permission.CAMERA,
-                                    ) == PackageManager.PERMISSION_GRANTED
-                                ) {
-                                    cameraLauncher.launch(null)
-                                } else {
-                                    cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-                                }
-                            }) {
-                                Icon(Icons.Filled.PhotoCamera, contentDescription = "拍照识别")
-                            }
-                        },
                         singleLine = true,
                         textStyle = MaterialTheme.typography.headlineMedium.copy(
                             fontFamily = FontFamily.Monospace,
@@ -444,7 +363,7 @@ fun TransactionEditScreen(
                     )
                 }
 
-                // === 4-6. 详情分组:账户 + 日期 + 备注 ===
+                // === 4-6. 详情分组:备注 + 账户 + 日期 ===
                 UnifiedCard(
                     modifier = Modifier.fillMaxWidth(),
                     variant = UnifiedCardVariant.ELEVATED,
@@ -452,7 +371,18 @@ fun TransactionEditScreen(
                 ) {
                     Text("详情", style = MaterialTheme.typography.titleSmall)
                     Spacer(Modifier.height(Spacing.s))
-                    // 4. 账户选择
+                    // 4. 备注
+                    OutlinedTextField(
+                        value = note,
+                        onValueChange = { note = it },
+                        label = { Text("备注") },
+                        singleLine = false,
+                        maxLines = 3,
+                        shape = RoundedCornerShape(Corner.medium),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(Spacing.s))
+                    // 5. 账户选择
                     AccountSelector(
                         accounts = accounts,
                         selectedId = selectedAccountId,
@@ -463,7 +393,7 @@ fun TransactionEditScreen(
                         },
                     )
                     Spacer(Modifier.height(Spacing.s))
-                    // 5. 日期选择
+                    // 6. 日期选择
                     OutlinedTextField(
                         value = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
                             .format(Date(selectedDate)),
@@ -476,17 +406,6 @@ fun TransactionEditScreen(
                             }
                         },
                         singleLine = true,
-                        shape = RoundedCornerShape(Corner.medium),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Spacer(Modifier.height(Spacing.s))
-                    // 6. 备注
-                    OutlinedTextField(
-                        value = note,
-                        onValueChange = { note = it },
-                        label = { Text("备注") },
-                        singleLine = false,
-                        maxLines = 3,
                         shape = RoundedCornerShape(Corner.medium),
                         modifier = Modifier.fillMaxWidth(),
                     )
@@ -664,23 +583,6 @@ fun TransactionEditScreen(
     }
 
     // OCR 识别中对话框:识别完成自动关闭
-    if (isOcrLoading) {
-        AlertDialog(
-            onDismissRequest = { /* 阻断 dismiss,识别完成自动关闭 */ },
-            confirmButton = {},
-            title = { Text("识别中") },
-            text = {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(Spacing.m),
-                ) {
-                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
-                    Text("正在识别小票...")
-                }
-            },
-        )
-    }
-
     // 标签选择底部弹窗
     if (showTagDialog) {
         val recommendedTags = remember {

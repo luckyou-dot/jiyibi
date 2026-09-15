@@ -45,6 +45,14 @@ class TransactionRepositoryImpl @Inject constructor(
 
     override suspend fun deleteAll() = dao.deleteAll()
 
+    override suspend fun getByIds(ids: List<Long>): List<Transaction> {
+        if (ids.isEmpty()) return emptyList()
+        return dao.getByIds(ids).map { it.toDomain() }
+    }
+
+    override suspend fun hasSameAmountInWindow(amount: Long, from: Long, to: Long): Boolean =
+        dao.countSameAmountInWindow(amount, from, to) > 0
+
     override fun observeTotalExpense(start: Long, end: Long): Flow<Long> =
         dao.observeTotalExpense(start, end)
 

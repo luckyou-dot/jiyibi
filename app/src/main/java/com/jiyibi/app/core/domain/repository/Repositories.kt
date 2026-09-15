@@ -25,6 +25,12 @@ interface TransactionRepository {
     suspend fun delete(id: Long)
     suspend fun deleteAll()
 
+    /** 按 id 批量取交易（供「自动记账」页展示最近自动记录） */
+    suspend fun getByIds(ids: List<Long>): List<Transaction>
+
+    /** 指定金额在时间窗内是否已有交易（通知去重：同一条通知可能重复投递） */
+    suspend fun hasSameAmountInWindow(amount: Long, from: Long, to: Long): Boolean
+
     fun observeTotalExpense(start: Long, end: Long): Flow<Long>
     fun observeTotalIncome(start: Long, end: Long): Flow<Long>
     fun observeCategoryStats(start: Long, end: Long): Flow<List<CategoryStat>>

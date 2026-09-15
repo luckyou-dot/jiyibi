@@ -1,8 +1,5 @@
 package com.jiyibi.app.ui.search
 
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,10 +12,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -27,7 +21,6 @@ import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Category
 import androidx.compose.material3.Button
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
@@ -49,7 +42,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -61,21 +53,18 @@ import com.jiyibi.app.core.designsystem.component.GlassCard
 import com.jiyibi.app.core.designsystem.component.LoadingState
 import com.jiyibi.app.core.designsystem.component.Spacing
 import com.jiyibi.app.core.designsystem.component.SwipeToDeleteItem
+import com.jiyibi.app.core.designsystem.component.TransactionDayCard
+import com.jiyibi.app.core.designsystem.component.TransactionDayHeader
 import com.jiyibi.app.core.designsystem.component.UnifiedCard
 import com.jiyibi.app.core.designsystem.component.UnifiedCardVariant
-import com.jiyibi.app.core.designsystem.component.categoryIconByKey
-import com.jiyibi.app.core.designsystem.component.listItemEnterAnimation
-import com.jiyibi.app.core.designsystem.theme.ExpenseRed
-import com.jiyibi.app.core.designsystem.theme.IncomeGreen
 import com.jiyibi.app.core.domain.model.Category
 import com.jiyibi.app.core.domain.model.Transaction
 import com.jiyibi.app.core.domain.model.TransactionType
-import com.jiyibi.app.core.domain.model.centsToYuan
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SearchScreen(
     onBack: () -> Unit,
@@ -166,11 +155,11 @@ fun SearchScreen(
                 )
             }
 
-            // 3. 结果列表
+            // 3. 结果列表（与首页「最近交易」同一套结构：按天分组 + 每天出入合计）
             Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
                 when {
                     state.isLoading -> LoadingState()
-                    state.results.isEmpty() -> EmptyState(
+                    state.resultGroups.isEmpty() -> EmptyState(
                         icon = Icons.Filled.Search,
                         title = "未找到匹配的交易",
                         subtitle = "试试调整关键词或筛选条件",
@@ -178,13 +167,24 @@ fun SearchScreen(
                     else -> LazyColumn(
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(Spacing.l),
-                        verticalArrangement = Arrangement.spacedBy(Spacing.m),
+                        verticalArrangement = Arrangement.spacedBy(Spacing.xs),
                     ) {
-                        itemsIndexed(state.results, key = { _, tx -> tx.id }) { index, tx ->
-                            val category = state.categories.firstOrNull { it.id == tx.categoryId }
-                            val categoryName = category?.name ?: "未分类"
-                            SwipeToDeleteItem(onDelete = { viewModel.deleteTransaction(tx.id) }) {
-                                TransactionItem(tx, category, categoryName, onEditTransaction, index)
+                        state.resultGroups.forEach { group ->
+                            item(key = "day-${group.dayStart}") {
+                                TransactionDayHeader(group = group)
+                            }
+                            item(key = "card-${group.dayStart}") {
+                                TransactionDayCard(
+                                    group = group,
+                                    onRowClick = onEditTransaction,
+                                ) { row, content ->
+                                    SwipeToDeleteItem(
+                                        onDelete = { viewModel.deleteTransaction(row.tx.id) },
+                                        backgroundCorner = Corner.small,
+                                    ) {
+                                        content()
+                                    }
+                                }
                             }
                         }
                     }
@@ -467,81 +467,7 @@ private fun TransactionType.displayLabel(): String = when (this) {
 }
 
 /**
- * 交易列表项：复用 HomeScreen RecentItem 样式
- *
- * - 卡片：[UnifiedCard] 的 [UnifiedCardVariant.ELEVATED] 变体 + [listItemEnterAnimation]
- * - 图标：使用分类自带的 icon key + 分类色（与首页一致，color=0 时回退主色）
- * - 副标题：时间
- * - 金额：支出 -红 / 收入 +绿 / 转账 灰
- * - 交互：[combinedClickable] 点击/长按均进入编辑
- *
- * @param index 列表项位置，用于计算错开延迟
+ * 「查看全部」的交易行渲染已抽到共享组件 `TransactionRow` /
+ * `TransactionDayCard`（见 `core/designsystem/component/TransactionList.kt`），
+ * 与首页「最近交易」共用同一套实现，此处不再保留副本。
  */
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun TransactionItem(
-    tx: Transaction,
-    category: Category?,
-    categoryName: String,
-    onEditTransaction: (Long) -> Unit,
-    index: Int,
-) {
-    val time = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(tx.date))
-    val amountColor = when (tx.type) {
-        TransactionType.EXPENSE -> ExpenseRed
-        TransactionType.INCOME -> IncomeGreen
-        TransactionType.TRANSFER -> MaterialTheme.colorScheme.onSurfaceVariant
-    }
-    val sign = if (tx.type == TransactionType.EXPENSE) "-" else "+"
-    val categoryIcon = category?.let { categoryIconByKey(it.icon) } ?: Icons.Filled.Category
-    // 分类色：color=0（透明黑）时回退到主色，避免图标不可见
-    val categoryColor = category?.let { cat ->
-        if (cat.color != 0) Color(cat.color) else MaterialTheme.colorScheme.primary
-    } ?: MaterialTheme.colorScheme.primary
-    UnifiedCard(
-        modifier = Modifier
-            .fillMaxWidth()
-            .listItemEnterAnimation(index)
-            .combinedClickable(
-                onClick = { onEditTransaction(tx.id) },
-                onLongClick = { onEditTransaction(tx.id) },
-            ),
-        variant = UnifiedCardVariant.ELEVATED,
-        cornerRadius = Corner.large,
-        contentPadding = PaddingValues(Spacing.m),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            // 分类图标：圆形背景 + 分类色（与首页一致）
-            Box(
-                modifier = Modifier
-                    .size(40.dp)
-                    .clip(CircleShape)
-                    .background(categoryColor.copy(alpha = 0.15f)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(categoryIcon, contentDescription = null, tint = categoryColor)
-            }
-            Spacer(Modifier.width(Spacing.m))
-            Column(modifier = Modifier.weight(1f)) {
-                // 行 1：备注（无备注时用分类名）
-                Text(
-                    tx.note.ifBlank { categoryName },
-                    style = MaterialTheme.typography.bodyLarge,
-                    maxLines = 1,
-                )
-                // 行 2：时间
-                Text(
-                    time,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                )
-            }
-            Text(
-                "$sign¥${tx.amount.centsToYuan().toPlainString()}",
-                color = amountColor,
-                style = MaterialTheme.typography.titleMedium,
-            )
-        }
-    }
-}

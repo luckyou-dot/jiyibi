@@ -2,6 +2,7 @@ package com.jiyibi.app.ui.category
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.jiyibi.app.core.data.repository.MerchantCategoryRepository
 import com.jiyibi.app.core.domain.model.Category
 import com.jiyibi.app.core.domain.model.CategoryKind
 import com.jiyibi.app.core.domain.repository.CategoryRepository
@@ -23,6 +24,7 @@ data class CategoryManageUiState(
 @HiltViewModel
 class CategoryManageViewModel @Inject constructor(
     private val categoryRepository: CategoryRepository,
+    private val merchantCategoryRepository: MerchantCategoryRepository,
 ) : ViewModel() {
     val uiState: StateFlow<CategoryManageUiState> = combine(
         categoryRepository.observeByKind(CategoryKind.EXPENSE.name),
@@ -56,6 +58,11 @@ class CategoryManageViewModel @Inject constructor(
     }
 
     fun deleteCategory(id: Long) {
-        viewModelScope.launch { categoryRepository.delete(id) }
+        viewModelScope.launch {
+            categoryRepository.delete(id)
+            // 清理学习表里指向该分类的条目：否则会留下悬空 id，
+            // 虽然读取端能兜底（查不到分类就回退静态表），但主动清理更干净
+            merchantCategoryRepository.forgetCategory(id)
+        }
     }
 }

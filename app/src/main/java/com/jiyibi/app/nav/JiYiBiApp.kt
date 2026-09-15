@@ -33,6 +33,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.jiyibi.app.R
 import com.jiyibi.app.ui.account.AccountManageScreen
+import com.jiyibi.app.ui.autorecord.AutoRecordScreen
 import com.jiyibi.app.ui.backup.BackupExportScreen
 import com.jiyibi.app.ui.budget.BudgetEditScreen
 import com.jiyibi.app.ui.budget.BudgetScreen
@@ -204,6 +205,7 @@ fun JiYiBiApp() {
                     onOpenBackup = { navController.navigate(Routes.BACKUP) },
                     onOpenAbout = { navController.navigate(Routes.ABOUT) },
                     onOpenFeedback = { navController.navigate(Routes.FEEDBACK) },
+                    onOpenAutoRecord = { navController.navigate(Routes.AUTO_RECORD) },
                 )
             }
 
@@ -248,6 +250,13 @@ fun JiYiBiApp() {
             // 标签管理
             composable(Routes.TAG_MANAGE) {
                 TagManageScreen(onBack = { navController.popBackStack() })
+            }
+            // 自动记账（通知监听）
+            composable(Routes.AUTO_RECORD) {
+                AutoRecordScreen(
+                    onBack = { navController.popBackStack() },
+                    onEditTransaction = { id -> navController.navigate(Routes.transactionEdit(id)) },
+                )
             }
             // 备份导出
             composable(Routes.BACKUP) {
