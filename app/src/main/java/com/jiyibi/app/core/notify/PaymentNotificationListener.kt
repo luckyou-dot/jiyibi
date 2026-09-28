@@ -1,25 +1,18 @@
 package com.jiyibi.app.core.notify
 
 import android.app.Notification
+import android.content.ComponentName
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
-import com.jiyibi.app.core.data.repository.AccountPreferencesRepository
-import com.jiyibi.app.core.data.repository.AutoRecordPreferencesRepository
-import com.jiyibi.app.core.data.repository.MerchantCategoryRepository
-import com.jiyibi.app.core.domain.model.CategoryKind
-import com.jiyibi.app.core.domain.model.Transaction
-import com.jiyibi.app.core.domain.model.TransactionType
-import com.jiyibi.app.core.domain.repository.AccountRepository
-import com.jiyibi.app.core.domain.repository.CategoryRepository
-import com.jiyibi.app.core.domain.repository.TransactionRepository
+import com.jiyibi.app.core.ai.AiPaymentParser
+import com.jiyibi.app.core.data.repository.UnmatchedNotificationRepository
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -29,42 +22,34 @@ import kotlinx.coroutines.launch
  * 1. 系统在用户授权「通知使用权」后，会把所有通知回调到 [onNotificationPosted]；
  * 2. 先按**包名白名单**过滤（[PaymentPackages.WATCHED]），非白名单直接返回；
  * 3. 读取完整文案（BigText / TextLines 优先，见 [readText]）后交给 [PaymentNotificationParser]；
- * 4. 命中的按「默认账户 + 猜测分类」写入交易表，并同步调整账户余额；
- * 5. 未命中的微信 / 支付宝通知把原始文案打到 Logcat，便于按真机文案补规则。
+ * 4. 命中的交给 [PaymentRecorder] 落库（选账户、猜分类、写交易、同步余额、弹提醒）；
+ * 5. 未命中的微信 / 支付宝通知把原始文案打进「未识别队列」，在 App 内可见，
+ *    便于按真机文案补规则。
  *
- * ## 调规则的方法
- * ```
- * adb logcat -s JiYiBiNotify
- * ```
- * 看到 `未命中 [...]` 的行，把其中的文案片段补进
- * [PaymentNotificationParser] 的 `RULES` 或 `IGNORE_KEYWORDS` 即可。
+ * ## 通知方案的天然盲区（为什么还要无障碍服务）
+ * 用户**正在微信 / 支付宝里付款**时（扫码、转账），支付过程发生在前台，
+ * 系统不会给正在使用的 App 自己推通知——监听器收不到任何事件。
+ * 这个场景由 [PaymentAccessibilityService] 读取支付成功页面来补足。
  *
  * ## 刻意不做的事
- * - **不静默吞掉解析失败的通知**：一律打日志，宁可多一行日志也不要用户莫名其妙少账。
+ * - **不静默吞掉解析失败的通知**：进未识别队列 + 打日志，宁可多一条待办也不要用户莫名其妙少账。
  * - **不读验证码**：Android 15 起含 OTP 的通知对不受信任的监听服务会被系统屏蔽，
  *   且本功能也无需该能力。
  */
 @AndroidEntryPoint
 class PaymentNotificationListener : NotificationListenerService() {
 
+    /** 统一落库器：与无障碍服务共用同一段记账流程 */
     @Inject
-    lateinit var transactionRepository: TransactionRepository
+    lateinit var recorder: PaymentRecorder
 
+    /** 未识别通知队列：规则漏掉新句式时，让用户在 App 里看得到，而不是只有 Logcat */
     @Inject
-    lateinit var accountRepository: AccountRepository
+    lateinit var unmatchedNotificationRepository: UnmatchedNotificationRepository
 
+    /** AI 兜底解析：规则未命中时先问一次大模型（未配置则行为与从前一致） */
     @Inject
-    lateinit var categoryRepository: CategoryRepository
-
-    @Inject
-    lateinit var accountPreferences: AccountPreferencesRepository
-
-    @Inject
-    lateinit var autoRecordPreferences: AutoRecordPreferencesRepository
-
-    /** 「商户 → 分类」学习表：用户手工纠正过的分类优先于静态关键词表 */
-    @Inject
-    lateinit var merchantCategoryRepository: MerchantCategoryRepository
+    lateinit var aiParser: AiPaymentParser
 
     /**
      * 服务作用域。
@@ -76,12 +61,15 @@ class PaymentNotificationListener : NotificationListenerService() {
 
     override fun onListenerConnected() {
         super.onListenerConnected()
-        Log.i(TAG, "通知监听已连接，支付通知自动记账生效")
+        Log.i(PaymentRecorder.TAG, "通知监听已连接，支付通知自动记账生效")
     }
 
     override fun onListenerDisconnected() {
         super.onListenerDisconnected()
-        Log.w(TAG, "通知监听已断开（被系统回收，或用户撤销了通知使用权）")
+        Log.w(PaymentRecorder.TAG, "通知监听已断开（被系统回收，或用户撤销了通知使用权），尝试自动重绑")
+        // 激进 ROM（省电策略）会回收监听服务且不一定主动重绑，
+        // 主动 requestRebind 能显著提高存活率；用户主动撤销授权时系统会忽略此请求。
+        requestRebind(ComponentName(this, PaymentNotificationListener::class.java))
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
@@ -94,16 +82,51 @@ class PaymentNotificationListener : NotificationListenerService() {
         val read = readText(notification)
         val parsed = PaymentNotificationParser.parse(packageName, read.title, read.content)
         if (parsed == null) {
-            // 未命中：留下原始文案供调规则，不要静默丢弃
+            // 未命中：先试 AI 兜底（配置了 Key 才会真正发起请求），
+            // AI 也啃不动再进未识别队列——只打 Logcat 用户根本看不到。
             Log.d(
-                TAG,
+                PaymentRecorder.TAG,
                 "未命中 [${PaymentPackages.displayName(packageName)}] " +
                     "title=「${read.title}」 content=「${read.content}」",
             )
+            val occurredAt = if (sbn.postTime > 0L) sbn.postTime else System.currentTimeMillis()
+            scope.launch {
+                val aiParsed = if (aiParser.isConfigured()) {
+                    runCatching {
+                        aiParser.parsePaymentNotification(packageName, read.title, read.content)
+                    }.getOrNull()
+                } else {
+                    null
+                }
+                if (aiParsed != null) {
+                    Log.i(PaymentRecorder.TAG, "AI 兜底解析成功：${read.content.take(40)}")
+                    recorder.recordAsync(
+                        source = "AI通知",
+                        packageName = packageName,
+                        occurredAt = occurredAt,
+                        parsed = aiParsed,
+                        // 通知 key：同一条通知被系统重投 / 更新时 key 不变，供落库器精确判重
+                        eventId = sbn.key,
+                    )
+                } else {
+                    unmatchedNotificationRepository.add(
+                        packageName = packageName,
+                        title = read.title,
+                        content = read.content,
+                        postedAt = occurredAt,
+                    )
+                }
+            }
             return
         }
 
-        scope.launch { record(sbn, parsed) }
+        recorder.recordAsync(
+            source = "通知",
+            packageName = packageName,
+            occurredAt = if (sbn.postTime > 0L) sbn.postTime else System.currentTimeMillis(),
+            parsed = parsed,
+            eventId = sbn.key,
+        )
     }
 
     override fun onDestroy() {
@@ -148,148 +171,5 @@ class PaymentNotificationListener : NotificationListenerService() {
             primary
         }
         return NotificationText(title = title, content = content)
-    }
-
-    /** 落库：去重 → 选账户 → 猜分类 → 写交易 → 同步余额 → 入复核队列 */
-    private suspend fun record(sbn: StatusBarNotification, parsed: ParsedPayment) {
-        // 用户可能在「自动记账」页关掉了开关
-        if (!autoRecordPreferences.enabled.first()) {
-            Log.d(TAG, "自动记账已关闭，跳过")
-            return
-        }
-
-        val occurredAt = if (sbn.postTime > 0L) sbn.postTime else System.currentTimeMillis()
-
-        // 去重：同一条通知可能被重复投递（通知被更新或重发），金额与时间都相同
-        val duplicated = transactionRepository.hasSameAmountInWindow(
-            amount = parsed.amountCents,
-            from = occurredAt - DUPLICATE_WINDOW_MILLIS,
-            to = occurredAt + DUPLICATE_WINDOW_MILLIS,
-        )
-        if (duplicated) {
-            Log.d(TAG, "跳过重复通知：${parsed.matchedRule} ${formatYuan(parsed.amountCents)}")
-            return
-        }
-
-        val accountId = resolveAccountId(parsed.type)
-        if (accountId == null) {
-            Log.w(TAG, "没有可用账户，跳过自动记账")
-            return
-        }
-
-        val transaction = Transaction(
-            id = 0L,
-            type = parsed.type,
-            amount = parsed.amountCents,
-            accountId = accountId,
-            toAccountId = null,
-            categoryId = resolveCategoryId(parsed),
-            // 有商户名就用商户名，否则退化为原始文案（截断，避免备注过长）
-            note = parsed.merchant.ifBlank { parsed.rawText }.take(NOTE_MAX_LENGTH),
-            tags = emptyList(),
-            date = occurredAt,
-        )
-
-        val newId = transactionRepository.upsert(transaction)
-
-        // 与手动记账保持一致：同步调整账户余额，否则账户余额会与流水脱节。
-        // 手动路径见 TransactionEditViewModel.applyAccountEffect。
-        val delta = if (parsed.type == TransactionType.EXPENSE) {
-            -parsed.amountCents
-        } else {
-            parsed.amountCents
-        }
-        accountRepository.adjustBalance(accountId, delta)
-
-        // 记入复核队列，供「自动记账」页回溯与撤销
-        autoRecordPreferences.addRecentId(newId)
-
-        Log.i(
-            TAG,
-            "已自动记账 [${parsed.matchedRule}] ${formatYuan(parsed.amountCents)} " +
-                "note=「${transaction.note}」 id=$newId",
-        )
-    }
-
-    /**
-     * 选择记账账户：优先用「我的 → 默认账户」里配置的默认支出/收入账户，
-     * 该账户不存在时回退到账户列表第一个。
-     */
-    private suspend fun resolveAccountId(type: TransactionType): Long? {
-        val accounts = accountRepository.observeAll().first()
-        if (accounts.isEmpty()) return null
-
-        val preferred = if (type == TransactionType.EXPENSE) {
-            accountPreferences.defaultExpenseAccountId.first()
-        } else {
-            accountPreferences.defaultIncomeAccountId.first()
-        }
-        return preferred?.takeIf { id -> accounts.any { it.id == id } } ?: accounts.first().id
-    }
-
-    /**
-     * 猜测分类 id。三级策略，优先级从高到低：
-     *
-     * 1. **学习表命中**：用户之前纠正过这个商户 → 直接用用户纠正过的分类（含「明确未分类」墓碑）；
-     * 2. **静态关键词表**：[PaymentNotificationParser.guessCategoryName] 按商户关键词猜；
-     * 3. 都猜不到 → 返回 null（按「未分类」记录），**不硬塞默认分类**——
-     *    把餐饮记成交通比留空更难纠正。
-     *
-     * 学习表优先于静态表，是因为静态表存在固有缺陷：表格顺序决定优先级
-     * （「美团打车」会被「餐饮」组的 `美团` 先命中），且返回分类名，用户改名后即失效。
-     * 用户的每一次手工纠正都比内置表更权威。
-     */
-    private suspend fun resolveCategoryId(parsed: ParsedPayment): Long? {
-        val merchant = parsed.merchant.ifBlank { parsed.rawText }
-        val kind = if (parsed.type == TransactionType.INCOME) {
-            CategoryKind.INCOME
-        } else {
-            CategoryKind.EXPENSE
-        }
-        val allCategories = categoryRepository.observeAll().first()
-
-        // 1. 学习表：只在商户名非空时查询（rawText 是全句，做 key 没有泛化价值）
-        if (parsed.merchant.isNotBlank()) {
-            when (val learned = merchantCategoryRepository.lookup(parsed.merchant)) {
-                is MerchantCategoryRepository.LookupResult.Matched -> {
-                    // 顺带校验：分类可能已被删除，或用户把它改成了相反的收支类型
-                    val hit = allCategories.firstOrNull {
-                        it.id == learned.categoryId && it.kind == kind
-                    }
-                    if (hit != null) return hit.id
-                    // 悬空 id：顺手清理，避免每次都要走一遍这个分支
-                    merchantCategoryRepository.forgetCategory(learned.categoryId)
-                }
-
-                MerchantCategoryRepository.LookupResult.ExplicitlyUncategorized -> {
-                    // 用户曾明确要求这个商户记为「未分类」，尊重之，不再走静态表
-                    return null
-                }
-
-                MerchantCategoryRepository.LookupResult.Unknown -> Unit
-            }
-        }
-
-        // 2. 静态关键词表兜底
-        val name = PaymentNotificationParser.guessCategoryName(
-            text = merchant,
-            type = parsed.type,
-        ) ?: return null
-
-        return allCategories.firstOrNull { it.kind == kind && it.name == name }?.id
-    }
-
-    /** 分 → 「¥12.34」形式，仅用于日志 */
-    private fun formatYuan(cents: Long): String = "¥%.2f".format(cents / 100.0)
-
-    companion object {
-        /** Logcat 标签：`adb logcat -s JiYiBiNotify` */
-        const val TAG = "JiYiBiNotify"
-
-        /** 去重时间窗：同金额在此窗口内视为同一条通知的重复投递 */
-        private const val DUPLICATE_WINDOW_MILLIS = 5_000L
-
-        /** 备注最大长度，避免把整段营销文案写进备注 */
-        private const val NOTE_MAX_LENGTH = 60
     }
 }

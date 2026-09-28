@@ -1,5 +1,11 @@
 package com.jiyibi.app.ui.autorecord
 
+import android.Manifest
+import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -20,10 +26,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.HelpOutline
+import androidx.compose.material.icons.filled.AccessibilityNew
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.NotificationsOff
+import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -31,6 +40,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -48,10 +58,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.jiyibi.app.core.data.repository.AiConfig
+import com.jiyibi.app.core.data.repository.UnmatchedNotification
 import com.jiyibi.app.core.designsystem.component.Corner
 import com.jiyibi.app.core.designsystem.component.EmptyState
 import com.jiyibi.app.core.designsystem.component.Spacing
@@ -64,7 +78,9 @@ import com.jiyibi.app.core.designsystem.theme.ExpenseRed
 import com.jiyibi.app.core.designsystem.theme.IncomeGreen
 import com.jiyibi.app.core.domain.model.TransactionType
 import com.jiyibi.app.core.domain.model.centsToYuan
+import com.jiyibi.app.core.notify.AccessibilityAccessHelper
 import com.jiyibi.app.core.notify.NotificationAccessHelper
+import com.jiyibi.app.core.notify.PaymentPackages
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -84,15 +100,34 @@ import java.util.Locale
 fun AutoRecordScreen(
     onBack: () -> Unit,
     onEditTransaction: (Long) -> Unit,
+    onAddTransaction: () -> Unit,
     viewModel: AutoRecordViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val aiConfig by viewModel.aiConfig.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
     // 通知使用权不由 App 控制，只能读系统设置；返回本页时重新判定
     var accessGranted by remember { mutableStateOf(NotificationAccessHelper.isEnabled(context)) }
+    // 无障碍服务同理：从系统设置返回后重新判定
+    var accessibilityGranted by remember { mutableStateOf(AccessibilityAccessHelper.isEnabled(context)) }
     LifecycleResumeEffect(Unit) {
         accessGranted = NotificationAccessHelper.isEnabled(context)
+        accessibilityGranted = AccessibilityAccessHelper.isEnabled(context)
+        onPauseOrDispose { }
+    }
+
+    // Android 13+ 弹横幅提醒还需要运行时通知权限（系统设置页回来后一并刷新）
+    var notifPermissionGranted by remember {
+        mutableStateOf(hasNotificationPermission(context))
+    }
+    val notifPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        notifPermissionGranted = granted || hasNotificationPermission(context)
+    }
+    LifecycleResumeEffect(Unit) {
+        notifPermissionGranted = hasNotificationPermission(context)
         onPauseOrDispose { }
     }
 
@@ -130,10 +165,37 @@ fun AutoRecordScreen(
             }
 
             item {
+                AccessibilityCard(
+                    granted = accessibilityGranted,
+                    onOpenSettings = {
+                        runCatching { context.startActivity(AccessibilityAccessHelper.settingsIntent()) }
+                    },
+                )
+            }
+
+            item {
+                AiCard(
+                    config = aiConfig,
+                    onSave = viewModel::saveAiConfig,
+                )
+            }
+
+            item {
                 SwitchCard(
                     enabled = state.enabled,
                     onToggle = viewModel::setEnabled,
                 )
+            }
+
+            // Android 13+ 未授通知权限时，自动记账成功的横幅提醒弹不出来
+            if (!notifPermissionGranted) {
+                item {
+                    NotificationPermissionCard(
+                        onRequest = {
+                            notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        },
+                    )
+                }
             }
 
             item {
@@ -161,6 +223,22 @@ fun AutoRecordScreen(
                         confirmMessage = "将同时回滚该笔对账户余额的影响，确定删除吗？",
                     ) {
                         AutoRecordRow(item = item, onClick = { onEditTransaction(item.tx.id) })
+                    }
+                }
+            }
+
+            // 未识别的支付通知：规则漏掉新句式时在这里看得到，而不是无声无息
+            if (state.unmatched.isNotEmpty()) {
+                item { SectionHeader("未识别的支付通知") }
+                items(state.unmatched, key = { "${it.postedAt}-${it.content}" }) { entry ->
+                    UnmatchedRow(entry = entry, onAddManually = onAddTransaction)
+                }
+                item {
+                    TextButton(
+                        onClick = viewModel::clearUnmatched,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("清空未识别记录", color = MaterialTheme.colorScheme.error)
                     }
                 }
             }
@@ -362,6 +440,275 @@ private fun SectionHeader(title: String) {
         modifier = Modifier.padding(top = Spacing.s),
     )
 }
+
+/**
+ * AI 智能识别配置卡（可选增强）。
+ *
+ * 规则永远优先，AI 只做两件兜底：规则解析不了的通知识别、关键词猜不到的分类。
+ * 未配置 / 关闭时行为与纯本地完全一致。API Key 只存本机 DataStore。
+ */
+@Composable
+private fun AiCard(config: AiConfig, onSave: (AiConfig) -> Unit) {
+    // 本地编辑态：以已保存值为初值；点保存后数据回流，值一致不会打断输入
+    var enabled by remember(config) { mutableStateOf(config.enabled) }
+    var apiKey by remember(config) { mutableStateOf(config.apiKey) }
+    var baseUrl by remember(config) { mutableStateOf(config.baseUrl) }
+    var model by remember(config) { mutableStateOf(config.model) }
+
+    UnifiedCard(
+        modifier = Modifier.fillMaxWidth(),
+        variant = UnifiedCardVariant.ELEVATED,
+        cornerRadius = Corner.large,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(
+                        if (config.isConfigured) {
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.12f)
+                        },
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Filled.Psychology,
+                    contentDescription = null,
+                    tint = if (config.isConfigured) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+            }
+            Spacer(Modifier.width(Spacing.m))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "AI 智能识别（可选增强）",
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Medium,
+                )
+                Text(
+                    if (config.isConfigured) "已启用：规则啃不动的文案交给大模型兜底"
+                    else if (enabled) "开关已开，还需在下方填入 API Key 才会生效"
+                    else "未启用：保持纯本地识别",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = enabled, onCheckedChange = { enabled = it })
+        }
+
+        Spacer(Modifier.height(Spacing.s))
+        Text(
+            "内置规则命中时不会联网；只有规则识别不了的通知、关键词猜不到的分类才调用大模型。" +
+                "已预填 Agnes AI 的接口地址与模型名（当前免费），在下方填入你的 API Key 并打开开关即可用；" +
+                "也可改成任意 OpenAI 兼容接口（智谱、DeepSeek 等）。API Key 只保存在本机，不进版本库。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        Spacer(Modifier.height(Spacing.s))
+        OutlinedTextField(
+            value = apiKey,
+            onValueChange = { apiKey = it },
+            label = { Text("API Key") },
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(Spacing.s))
+        OutlinedTextField(
+            value = baseUrl,
+            onValueChange = { baseUrl = it },
+            label = { Text("接口地址（OpenAI 兼容）") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(Spacing.s))
+        OutlinedTextField(
+            value = model,
+            onValueChange = { model = it },
+            label = { Text("模型名") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        Spacer(Modifier.height(Spacing.m))
+        Button(
+            onClick = { onSave(AiConfig(enabled = enabled, baseUrl = baseUrl, apiKey = apiKey, model = model)) },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("保存 AI 配置")
+        }
+    }
+}
+
+/**
+ * 无障碍支付页面识别卡（可选增强）。
+ *
+ * 通知监听有个天然盲区：**正在微信 / 支付宝里扫码、转账时**，支付发生在前台，
+ * 系统不会给正在使用的 App 推通知，监听器收不到事件。无障碍服务在支付成功
+ * 页面出现时当场读屏记账，补上这个场景。可选开关：不开也能用通知方式记。
+ */
+@Composable
+private fun AccessibilityCard(granted: Boolean, onOpenSettings: () -> Unit) {
+    UnifiedCard(
+        modifier = Modifier.fillMaxWidth(),
+        variant = UnifiedCardVariant.ELEVATED,
+        cornerRadius = Corner.large,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(
+                        if (granted) {
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.12f)
+                        },
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Filled.AccessibilityNew,
+                    contentDescription = null,
+                    tint = if (granted) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+            }
+            Spacer(Modifier.width(Spacing.m))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "支付页面识别（无障碍增强）",
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Medium,
+                )
+                Text(
+                    if (granted) "已开启，扫码 / 转账支付当场记账" else "可选：补足通知抓不到的主动支付场景",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        Spacer(Modifier.height(Spacing.s))
+        Text(
+            "你正在微信 / 支付宝里扫码、转账时，付款过程发生在前台，系统不会推送通知，" +
+                "通知监听抓不到。开启本服务后，支付成功页面出现时会读取屏幕上的金额与商户当场记账。" +
+                "只识别微信 / 支付宝的支付页面，不读取其他内容。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        if (!granted) {
+            Spacer(Modifier.height(Spacing.s))
+            Button(onClick = onOpenSettings, modifier = Modifier.fillMaxWidth()) {
+                Text("去系统设置开启")
+            }
+        }
+    }
+}
+
+/** Android 13+ 通知权限引导卡：没权限时自动记账成功后弹不出横幅提醒 */
+@Composable
+private fun NotificationPermissionCard(onRequest: () -> Unit) {
+    UnifiedCard(
+        modifier = Modifier.fillMaxWidth(),
+        variant = UnifiedCardVariant.ELEVATED,
+        cornerRadius = Corner.large,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(BudgetAmber.copy(alpha = 0.18f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Filled.NotificationsOff,
+                    contentDescription = null,
+                    tint = BudgetAmber,
+                )
+            }
+            Spacer(Modifier.width(Spacing.m))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "记账提醒没有通知权限",
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Medium,
+                )
+                Text(
+                    "自动记账仍会正常入库，但成功后弹不出横幅提醒",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ExpenseRed,
+                )
+            }
+        }
+        Spacer(Modifier.height(Spacing.s))
+        Button(onClick = onRequest, modifier = Modifier.fillMaxWidth()) {
+            Text("开启记账提醒")
+        }
+    }
+}
+
+/** 单条未识别通知：展示原文快照，可一键跳去手动记一笔 */
+@Composable
+private fun UnmatchedRow(entry: UnmatchedNotification, onAddManually: () -> Unit) {
+    val timeFormat = remember { SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()) }
+    UnifiedCard(
+        modifier = Modifier.fillMaxWidth(),
+        variant = UnifiedCardVariant.OUTLINED,
+        cornerRadius = Corner.large,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                Icons.AutoMirrored.Filled.HelpOutline,
+                contentDescription = null,
+                tint = BudgetAmber,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.width(Spacing.s))
+            Text(
+                "${PaymentPackages.displayName(entry.packageName)} · " +
+                    timeFormat.format(Date(entry.postedAt)),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.height(Spacing.xs))
+        // 原始文案是补规则的第一手资料，用等宽字体保留
+        Text(
+            text = listOf(entry.title, entry.content)
+                .filter { it.isNotBlank() }
+                .joinToString("："),
+            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 3,
+        )
+        Spacer(Modifier.height(Spacing.s))
+        TextButton(onClick = onAddManually) {
+            Text("这笔没记上，去手动记一笔")
+        }
+    }
+}
+
+/** Android 13 以下不需要运行时通知权限，视为已授权 */
+private fun hasNotificationPermission(context: Context): Boolean =
+    Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+        ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.POST_NOTIFICATIONS,
+        ) == PackageManager.PERMISSION_GRANTED
 
 /**
  * 单条自动记录：分类图标 + 备注 + 时间/账户 + 金额。

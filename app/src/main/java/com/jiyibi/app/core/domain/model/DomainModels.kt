@@ -1,14 +1,42 @@
 package com.jiyibi.app.core.domain.model
 
 import java.math.BigDecimal
+import java.math.RoundingMode
 
 /**
  * 把以「分」为单位的 Long 转成元（BigDecimal），用于 UI 显示与导出。
  */
 fun Long.centsToYuan(): BigDecimal = BigDecimal.valueOf(this).movePointLeft(2)
 
-/** 把用户输入的元转成「分」。 */
-fun Double.yuanToCents(): Long = BigDecimal.valueOf(this).movePointRight(2).longValueExact()
+/**
+ * 单笔金额上限（分）：¥10 亿。
+ *
+ * 正常记账不可能碰到这个量级，超限只可能来自误输入（长按粘贴出一串 9）或脏数据导入。
+ * 截断而不抛异常，理由见 [yuanToCents]。
+ */
+const val MAX_AMOUNT_CENTS = 100_000_000_000L
+
+/**
+ * 把用户输入的元转成「分」，**任何输入都不抛异常**。
+ *
+ * 实现上两个关键点：
+ * 1. 用 `setScale(0, HALF_UP)` 而不是 `longValueExact()`：金额输入框只过滤了「数字和小数点」，
+ *    挡不住三位小数（`12.345`）。`longValueExact()` 遇到小数余量会抛
+ *    `ArithmeticException`，而这个函数被记一笔、账户余额、预算、借据、周期规则、
+ *    搜索金额筛选等 7 处直接调用，抛出去就是点「保存」当场闪退。四舍五入到分是记账的常规语义。
+ * 2. 溢出与非法输入兜底：`NaN` / `Infinity` 归零，超出 [MAX_AMOUNT_CENTS] 按上限截断，
+ *    避免 `Double` 科学计数法（如 `1e21`）转成天文数字写进数据库。
+ */
+fun Double.yuanToCents(): Long {
+    if (!isFinite()) return 0L
+    val cents = BigDecimal.valueOf(this).movePointRight(2).setScale(0, RoundingMode.HALF_UP)
+    val limit = BigDecimal.valueOf(MAX_AMOUNT_CENTS)
+    return when {
+        cents > limit -> MAX_AMOUNT_CENTS
+        cents < limit.negate() -> -MAX_AMOUNT_CENTS
+        else -> cents.longValueExact()
+    }
+}
 
 /** 一笔交易（领域模型，与 UI/DB 解耦）。 */
 data class Transaction(

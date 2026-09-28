@@ -64,15 +64,29 @@ object PaymentNotificationParser {
      *
      * 这批词主要来自微信的聊天/群消息、服务号推送，以及支付宝的营销推送，
      * 它们同样从 `com.tencent.mm` / 支付宝包名发出，必须显式排除。
+     *
+     * **注意**：这里绝不能出现「服务通知」「点击查看」这类词——现代版微信的
+     * 支付凭证正是通过「服务通知」会话推送的（通知标题就叫"服务通知"），
+     * 曾经把"服务通知"放进黑名单，导致所有微信支付通知在进入规则前就被
+     * 整体误杀，自动记账几个月完全不工作。泛化标题改由 [GENERIC_TITLES] 处理。
      */
     private val IGNORE_KEYWORDS = listOf(
         // 微信：聊天与群消息
         "群聊", "邀请你", "拍了拍", "语音通话", "视频通话", "通话中",
         // 微信：服务号 / 营销
-        "订阅号", "公众号", "服务通知", "点击查看", "点击领取", "立即参与",
+        "订阅号", "公众号", "点击领取", "立即参与",
         // 支付宝：营销与理财
         "蚂蚁森林", "能量收取", "芭芭农场", "余额宝收益", "基金", "集五福",
         "理财收益", "体验金", "红包已领取", "消费券",
+    )
+
+    /**
+     * 泛化标题：这些标题本身不携带任何支付信息（只是消息来源的容器名），
+     * 拼进 rawText 只会干扰黑名单判断与商户名提取，因此组装时直接跳过，
+     * 只用正文解析。
+     */
+    private val GENERIC_TITLES = setOf(
+        "服务通知", "微信支付", "支付助手", "微信", "支付宝", "收款助手", "微信收款助手",
     )
 
     /** 单条匹配规则：命中 [keywords] 任一即适用，收支方向由 [type] 指定 */
@@ -104,6 +118,14 @@ object PaymentNotificationParser {
             type = TransactionType.INCOME,
         ),
         Rule(
+            name = "微信-收款助手",
+            packages = setOf(PaymentPackages.WECHAT),
+            // 商家收款通知就是光秃秃的「收款￥88.00」——关键词带上货币符号，
+            // 精确匹配金额形态，避免误伤「收款码」「待收款」类文案
+            keywords = listOf("收款￥", "收款¥"),
+            type = TransactionType.INCOME,
+        ),
+        Rule(
             name = "支付宝-收款成功",
             packages = setOf(PaymentPackages.ALIPAY),
             keywords = listOf("成功收款", "收款成功", "收款到账", "已收款"),
@@ -125,13 +147,25 @@ object PaymentNotificationParser {
         Rule(
             name = "支付宝-付款成功",
             packages = setOf(PaymentPackages.ALIPAY),
-            keywords = listOf("付款成功", "支付成功", "已成功付款", "交易成功", "已支付"),
+            // 「成功付款」与「付款成功」是两种真实存在的词序，都要覆盖
+            keywords = listOf(
+                "付款成功", "支付成功", "已成功付款", "交易成功", "已支付",
+                "成功付款", "新的付款",
+            ),
             type = TransactionType.EXPENSE,
         ),
         Rule(
             name = "通用-扣款",
             packages = PaymentPackages.WATCHED,
             keywords = listOf("已扣款", "扣款成功", "自动扣款"),
+            type = TransactionType.EXPENSE,
+        ),
+        Rule(
+            name = "通用-转账给",
+            packages = PaymentPackages.WATCHED,
+            // 付款人视角的转账成功页面：「已转账给张三」「转账成功」。
+            // 收款人视角（「转账到账」「已收款」）已被前面的收入规则先命中，不会走到这里
+            keywords = listOf("已转账给", "转账成功"),
             type = TransactionType.EXPENSE,
         ),
     )
@@ -144,7 +178,8 @@ object PaymentNotificationParser {
      */
     private val AMOUNT_NEAR_KEYWORD = Regex(
         "(?:已支付|支付成功|付款成功|已付款|支付完成|已成功付款|交易成功" +
-            "|收款到账|收款成功|成功收款|已收款|已存入零钱|已扣款|扣款成功|自动扣款|退款|已退还)" +
+            "|收款到账|收款成功|成功收款|已收款|已存入零钱|已扣款|扣款成功|自动扣款|退款|已退还" +
+            "|成功付款|新的付款)" +
             "[^0-9¥￥]{0,8}[¥￥]?\\s*([0-9]+(?:\\.[0-9]{1,2})?)",
     )
 
@@ -159,6 +194,8 @@ object PaymentNotificationParser {
         Regex("向\\s*(.{2,20}?)\\s*(?:付款|转账|支付)"),
         Regex("在\\s*(.{2,20}?)\\s*(?:消费|支付|付款)"),
         Regex("(?:收款方|商户名称|付款给|收款人)[:：]?\\s*(.{2,20})"),
+        // 转账成功页的「转账给XX」：后面常直接跟金额，用前瞻截断避免把 ¥ 金额带进商户名
+        Regex("(?:已转账给|转账给)[:：]?\\s*(.{2,12}?)(?=\\s|¥|￥|\\.|$)"),
         Regex("(.{2,20}?)\\s*(?:收款|已收款)"),
     )
 
@@ -204,9 +241,13 @@ object PaymentNotificationParser {
     fun parse(packageName: String, title: String, content: String): ParsedPayment? {
         if (packageName !in PaymentPackages.WATCHED) return null
 
-        // 标题与正文拼起来一起看：部分通知把商户名放在标题、金额放在正文
-        val rawText = listOf(title, content)
-            .filter { it.isNotBlank() }
+        // 标题与正文拼起来一起看：部分通知把商户名放在标题、金额放在正文。
+        // 但泛化标题（"服务通知"等）没有信息量，跳过以免干扰黑名单与商户提取。
+        val rawText = listOf(
+            title.takeUnless { it in GENERIC_TITLES },
+            content,
+        )
+            .filter { !it.isNullOrBlank() }
             .joinToString(" ")
             .trim()
         if (rawText.isEmpty()) return null

@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -27,13 +28,16 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Label
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material3.Button
 import androidx.compose.material3.DatePicker
@@ -82,7 +86,10 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -233,6 +240,9 @@ fun TransactionEditScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val focusRequester = remember { FocusRequester() }
+    val noteFocusRequester = remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
 
     // 新建模式下,进入页面让金额输入框获得焦点
     SideEffect {
@@ -244,6 +254,41 @@ fun TransactionEditScreen(
     // 日期选择器
     var showDatePicker by remember { mutableStateOf(false) }
     val datePickerState = rememberDatePickerState(initialSelectedDateMillis = selectedDate)
+
+    // 校验结果与保存逻辑:底部保存条按钮和键盘「完成」共用同一段,避免两处漂移
+    val amountValid = amountText.toDoubleOrNull()?.let { it > 0 } ?: false
+    val accountValid = selectedAccountId != null
+    val performSave: () -> Unit = {
+        if (!amountValid || !accountValid) {
+            scope.launch {
+                snackbarHostState.showSnackbar(
+                    if (!amountValid) "请输入大于 0 的金额" else "请选择账户",
+                )
+            }
+        } else {
+            // 保存前先收起键盘,避免导航返回时输入法残留闪烁
+            keyboardController?.hide()
+            focusManager.clearFocus()
+            viewModel.save(
+                buildTransaction(
+                    viewModel, currentType, amountText, selectedAccountId,
+                    selectedToAccountId, selectedCategoryId, selectedDate, note, selectedTags,
+                ),
+                onSaved,
+            )
+            // 开启周期记账时同步创建规则
+            if (recurringEnabled) {
+                viewModel.saveRecurringRule(
+                    amount = amountText.toDoubleOrNull()?.yuanToCents() ?: 0,
+                    type = currentType,
+                    accountId = selectedAccountId ?: 0L,
+                    categoryId = selectedCategoryId,
+                    frequency = recurringFrequency,
+                    nextRunAt = calculateNextRun(recurringFrequency),
+                )
+            }
+        }
+    }
 
     // 根 Box:底层固定渐变 Hero 背景 + 透明 Scaffold 叠加,使 TopAppBar 透明地浮于渐变之上
     Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
@@ -264,10 +309,49 @@ fun TransactionEditScreen(
                             color = Color.White,
                         )
                     },
+                    actions = {
+                        // 编辑模式:删除用半透明白底圆钮,与右侧保存钮同尺寸
+                        if (isEditMode) {
+                            Box(
+                                modifier = Modifier
+                                    .padding(end = Spacing.s)
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.White.copy(alpha = 0.18f))
+                                    .clickable {
+                                        viewModel.delete(viewModel.transactionId, onSaved)
+                                    },
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(
+                                    Icons.Filled.Delete,
+                                    contentDescription = "删除",
+                                    tint = Color.White,
+                                )
+                            }
+                        }
+                        // 保存:右上角主色圆钮,固定在顶栏,任何键盘/滚动状态都直接可点
+                        Box(
+                            modifier = Modifier
+                                .padding(end = Spacing.m)
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primary)
+                                .clickable { performSave() },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                Icons.Filled.Check,
+                                contentDescription = "保存",
+                                tint = Color.White,
+                            )
+                        }
+                    },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
                 )
             },
-            snackbarHost = { SnackbarHost(snackbarHostState) },
+            // 键盘弹出时把 Snackbar 顶到键盘上方,校验提示不被遮挡
+            snackbarHost = { SnackbarHost(snackbarHostState, modifier = Modifier.imePadding()) },
         ) { padding ->
             // 编辑模式交易尚未加载完成:展示加载态
             if (isEditMode && editingTransaction == null) {
@@ -279,6 +363,8 @@ fun TransactionEditScreen(
                 modifier = Modifier
                     .padding(padding)
                     .fillMaxWidth()
+                    // 键盘弹出时收窄可视区,保证正在输入的控件不被键盘盖住
+                    .imePadding()
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = Spacing.l, vertical = Spacing.m),
                 verticalArrangement = Arrangement.spacedBy(Spacing.m),
@@ -338,7 +424,14 @@ fun TransactionEditScreen(
                             unfocusedContainerColor = Color.Transparent,
                             disabledContainerColor = Color.Transparent,
                         ),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Decimal,
+                            // 金额回车直接跳到备注,不用手动点过去
+                            imeAction = ImeAction.Next,
+                        ),
+                        keyboardActions = KeyboardActions(
+                            onNext = { noteFocusRequester.requestFocus() },
+                        ),
                         shape = RoundedCornerShape(Corner.medium),
                         modifier = Modifier
                             .fillMaxWidth()
@@ -379,7 +472,12 @@ fun TransactionEditScreen(
                         singleLine = false,
                         maxLines = 3,
                         shape = RoundedCornerShape(Corner.medium),
-                        modifier = Modifier.fillMaxWidth(),
+                        // 备注键盘「完成」直接保存,少一步收键盘/滚动
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(onDone = { performSave() }),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .focusRequester(noteFocusRequester),
                     )
                     Spacer(Modifier.height(Spacing.s))
                     // 5. 账户选择
@@ -485,79 +583,6 @@ fun TransactionEditScreen(
                 }
 
                 Spacer(Modifier.height(Spacing.xs))
-
-                // === 9. 底部按钮:新建模式单按钮;编辑模式「删除 + 保存」 ===
-                val amountValid = amountText.toDoubleOrNull()?.let { it > 0 } ?: false
-                val accountValid = selectedAccountId != null
-
-                if (isEditMode) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(Spacing.m),
-                    ) {
-                        TextButton(
-                            onClick = { viewModel.delete(viewModel.transactionId, onSaved) },
-                            modifier = Modifier.weight(1f),
-                        ) {
-                            Text("删除", color = MaterialTheme.colorScheme.error)
-                        }
-                        Button(
-                            onClick = {
-                                if (!amountValid || !accountValid) {
-                                    scope.launch {
-                                        snackbarHostState.showSnackbar(
-                                            if (!amountValid) "请输入大于 0 的金额" else "请选择账户",
-                                        )
-                                    }
-                                } else {
-                                    viewModel.save(buildTransaction(viewModel, currentType, amountText, selectedAccountId, selectedToAccountId, selectedCategoryId, selectedDate, note, selectedTags), onSaved)
-                                    // 开启周期记账时同步创建规则
-                                    if (recurringEnabled) {
-                                        viewModel.saveRecurringRule(
-                                            amount = amountText.toDoubleOrNull()?.yuanToCents() ?: 0,
-                                            type = currentType,
-                                            accountId = selectedAccountId ?: 0L,
-                                            categoryId = selectedCategoryId,
-                                            frequency = recurringFrequency,
-                                            nextRunAt = calculateNextRun(recurringFrequency),
-                                        )
-                                    }
-                                }
-                            },
-                            modifier = Modifier.weight(1f),
-                        ) {
-                            Text("保存")
-                        }
-                    }
-                } else {
-                    Button(
-                        onClick = {
-                            if (!amountValid || !accountValid) {
-                                scope.launch {
-                                    snackbarHostState.showSnackbar(
-                                        if (!amountValid) "请输入大于 0 的金额" else "请选择账户",
-                                    )
-                                }
-                            } else {
-                                viewModel.save(buildTransaction(viewModel, currentType, amountText, selectedAccountId, selectedToAccountId, selectedCategoryId, selectedDate, note, selectedTags), onSaved)
-                                // 开启周期记账时同步创建规则
-                                if (recurringEnabled) {
-                                    viewModel.saveRecurringRule(
-                                        amount = amountText.toDoubleOrNull()?.yuanToCents() ?: 0,
-                                        type = currentType,
-                                        accountId = selectedAccountId ?: 0L,
-                                        categoryId = selectedCategoryId,
-                                        frequency = recurringFrequency,
-                                        nextRunAt = calculateNextRun(recurringFrequency),
-                                    )
-                                }
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text("保存")
-                    }
-                }
             }
         }
     }

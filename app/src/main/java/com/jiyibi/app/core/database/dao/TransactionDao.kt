@@ -36,13 +36,19 @@ interface TransactionDao {
     suspend fun getByIds(ids: List<Long>): List<TransactionEntity>
 
     /**
-     * 统计指定金额在时间窗内的交易条数，用于通知去重。
+     * 统计「同金额 + 同收支类型」在时间窗内的交易条数，用于跨通道去重。
      *
-     * 同一条通知可能被系统重复投递（通知更新 / 重发），此时金额与 postTime 都相同，
-     * 命中即说明这笔已经记过，应跳过。
+     * 同一条通知可能被系统重复投递（通知更新 / 重发），或者同一次支付被
+     * 「通知监听」与「无障碍读屏」各报一次，此时金额、类型、时间都相同，命中即说明已记过。
+     *
+     * 必须带上 `type`：付款 ¥20 与紧随其后的退款 ¥20 是两笔真实交易，
+     * 只按金额判重会把退款吞掉，用户看到的就是「钱扣了但账上只有一笔」。
      */
-    @Query("SELECT COUNT(*) FROM transactions WHERE amount = :amount AND date BETWEEN :from AND :to")
-    suspend fun countSameAmountInWindow(amount: Long, from: Long, to: Long): Int
+    @Query(
+        "SELECT COUNT(*) FROM transactions " +
+            "WHERE amount = :amount AND type = :type AND date BETWEEN :from AND :to",
+    )
+    suspend fun countSameAmountInWindow(amount: Long, type: String, from: Long, to: Long): Int
 
     /** 指定时间范围内的交易，用于日/周/月/年统计与列表。 */
     @Query("SELECT * FROM transactions WHERE date BETWEEN :start AND :end ORDER BY date DESC")

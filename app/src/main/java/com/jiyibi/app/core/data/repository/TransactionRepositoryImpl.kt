@@ -50,8 +50,8 @@ class TransactionRepositoryImpl @Inject constructor(
         return dao.getByIds(ids).map { it.toDomain() }
     }
 
-    override suspend fun hasSameAmountInWindow(amount: Long, from: Long, to: Long): Boolean =
-        dao.countSameAmountInWindow(amount, from, to) > 0
+    override suspend fun hasSameAmountInWindow(amount: Long, type: String, from: Long, to: Long): Boolean =
+        dao.countSameAmountInWindow(amount, type, from, to) > 0
 
     override fun observeTotalExpense(start: Long, end: Long): Flow<Long> =
         dao.observeTotalExpense(start, end)

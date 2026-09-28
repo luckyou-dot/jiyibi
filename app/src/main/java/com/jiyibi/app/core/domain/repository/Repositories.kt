@@ -28,8 +28,12 @@ interface TransactionRepository {
     /** 按 id 批量取交易（供「自动记账」页展示最近自动记录） */
     suspend fun getByIds(ids: List<Long>): List<Transaction>
 
-    /** 指定金额在时间窗内是否已有交易（通知去重：同一条通知可能重复投递） */
-    suspend fun hasSameAmountInWindow(amount: Long, from: Long, to: Long): Boolean
+    /**
+     * 「同金额 + 同收支类型」在时间窗内是否已有交易。
+     *
+     * 用于自动记账去重：同一条通知会重复投递，同一次支付也会被通知与无障碍两条通道各报一次。
+     */
+    suspend fun hasSameAmountInWindow(amount: Long, type: String, from: Long, to: Long): Boolean
 
     fun observeTotalExpense(start: Long, end: Long): Flow<Long>
     fun observeTotalIncome(start: Long, end: Long): Flow<Long>

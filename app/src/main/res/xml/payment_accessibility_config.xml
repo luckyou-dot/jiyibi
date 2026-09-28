@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  支付页面识别的无障碍服务配置。
+
+  - 只订阅微信 / 支付宝两个包的窗口事件（packageNames 白名单，逗号分隔）；
+  - 只监听窗口切换与内容变化两类事件，其余（点击/滚动/手势等）一概不订阅；
+  - canRetrieveWindowContent 是读取屏幕文字所必需的能力。
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault"
+    android:canRetrieveWindowContent="true"
+    android:description="@string/payment_accessibility_description"
+    android:notificationTimeout="300"
+    android:packageNames="com.tencent.mm,com.eg.android.AlipayGphone" />

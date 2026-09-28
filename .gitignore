@@ -31,3 +31,6 @@ keystore.properties
 
 # Kotlin build cache (编译错误日志等中间产物)
 .kotlin/
+
+# AI tool working dir
+.zcode/

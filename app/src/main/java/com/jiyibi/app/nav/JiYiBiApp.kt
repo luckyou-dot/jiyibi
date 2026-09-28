@@ -19,6 +19,7 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -67,12 +68,28 @@ private const val TAB_TRANSITION_MS = 300
 
 /**
  * 应用根 Composable：Scaffold + 底部导航 + NavHost。
+ *
+ * @param pendingEditTransactionId 自动记账提醒通知点击携带的交易 id（-1 = 无），
+ *                                 导航一次后由 [onPendingEditConsumed] 消费掉
  */
 @Composable
-fun JiYiBiApp() {
+fun JiYiBiApp(
+    pendingEditTransactionId: Long = -1L,
+    onPendingEditConsumed: () -> Unit = {},
+) {
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
+
+    // 点击「已自动记账」通知 → 直达该笔交易的编辑页
+    LaunchedEffect(pendingEditTransactionId) {
+        if (pendingEditTransactionId > 0L) {
+            navController.navigate(Routes.transactionEdit(pendingEditTransactionId)) {
+                launchSingleTop = true
+            }
+            onPendingEditConsumed()
+        }
+    }
 
     Scaffold(
         bottomBar = {
@@ -216,10 +233,12 @@ fun JiYiBiApp() {
                     navArgument("prefill") { type = NavType.StringType; defaultValue = "" },
                 ),
             ) {
+                // prefill 不需要在这里传参：TransactionEditViewModel 已从 SavedStateHandle
+                // 读取同名 nav arg（见 TransactionEditViewModel.prefill），
+                // Screen 首次进入时解析 JSON 并回填金额与备注。
+                // 需要预填的入口直接走 Routes.transactionEdit(prefill = json) 即可。
                 TransactionEditScreen(
                     onSaved = { navController.popBackStack() },
-                    // TODO: 由另一子代理为 TransactionEditScreen 添加 prefill 参数后启用下方调用：
-                    //   prefill = backStackEntry?.arguments?.getString("prefill") ?: "",
                     onAddCategory = { navController.navigate(Routes.CATEGORY_MANAGE) },
                 )
             }
@@ -256,6 +275,7 @@ fun JiYiBiApp() {
                 AutoRecordScreen(
                     onBack = { navController.popBackStack() },
                     onEditTransaction = { id -> navController.navigate(Routes.transactionEdit(id)) },
+                    onAddTransaction = { navController.navigate(Routes.transactionEdit()) },
                 )
             }
             // 备份导出

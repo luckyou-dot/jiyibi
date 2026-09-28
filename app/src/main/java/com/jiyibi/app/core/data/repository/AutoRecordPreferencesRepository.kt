@@ -22,10 +22,10 @@ private val Context.autoRecordDataStore by preferencesDataStore(name = "auto_rec
  * 2. **最近自动记录的交易 id 队列**：按时间倒序保存最近若干条自动记账产生的交易 id。
  *
  * 为什么用「id 队列」而不是给 `transactions` 表加 `source` 字段？
- * 加字段属于 Room schema 变更，而本项目 `DatabaseModule` 目前使用
- * `fallbackToDestructiveMigration()`——一旦版本号提升，**用户全部账目会被直接清空**。
- * 为规避这个数据风险，这里把「最近自动记录」当作一个独立的、容量有限的**复核队列**
- * 来维护，不触碰交易表结构。队列天然只关心「最近」，正好与需求吻合。
+ * 加字段属于 Room schema 变更，需要提升数据库版本号并写 Migration；
+ * 而「最近自动记录」本质上是一个容量有限的**复核队列**，只关心最近这几十条，
+ * 用 DataStore 维护成本更低，也省掉一次跨版本迁移的风险面。
+ * 真要按来源做长期统计（比如「自动记账占总支出多少」）时，再加字段并配好 Migration 也不迟。
  *
  * 注意：从 JSON 备份恢复后，恢复出的交易 id 会变化，本队列可能指向已不存在的记录；
  * 使用方（`AutoRecordViewModel`）在查询时会自然过滤掉查不到的 id。

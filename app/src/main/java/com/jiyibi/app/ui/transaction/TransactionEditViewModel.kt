@@ -228,6 +228,9 @@ class TransactionEditViewModel @Inject constructor(
             val old = editingTransaction.value
             if (old != null) reverseAccountEffect(old)
             transactionRepository.delete(id)
+            // 自动记来的账在「最近自动记录」队列里还有一条 id：不一起清掉，
+            // 那条记录会在列表里显示成空白行（队列按 id 查交易，查不到才自然消失）
+            autoRecordPreferences.removeRecentId(id)
             onDone()
         }
     }

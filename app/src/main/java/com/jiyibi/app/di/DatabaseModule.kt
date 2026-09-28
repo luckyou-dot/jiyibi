@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.jiyibi.app.BuildConfig
 import com.jiyibi.app.core.database.AppDatabase
 import com.jiyibi.app.core.database.dao.AccountDao
 import com.jiyibi.app.core.database.dao.BudgetDao
@@ -16,6 +17,10 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import javax.inject.Singleton
 
 @Module
@@ -24,9 +29,14 @@ object DatabaseModule {
 
     @Provides
     @Singleton
-    fun provideDatabase(@ApplicationContext context: Context): AppDatabase =
-        Room.databaseBuilder(context, AppDatabase::class.java, AppDatabase.DB_NAME)
-            .fallbackToDestructiveMigration() // 开发期，正式版需提供 Migration
+    fun provideDatabase(@ApplicationContext context: Context): AppDatabase {
+        // 每次应用版本变化后、首次打开数据库前先把 .db 复制一份兜底：
+        // 将来某次 schema 迁移写错，或迁移中途进程被杀，用户仍能从 filesDir/db_backup/ 恢复。
+        backupDatabaseOncePerAppUpgrade(context)
+        return Room.databaseBuilder(context, AppDatabase::class.java, AppDatabase.DB_NAME)
+            // 缺失 Migration 时抛 IllegalStateException，而不是静默删表清空用户账目
+            // （策略与升版本流程见 AppDatabase.MIGRATIONS 的注释）
+            .addMigrations(*AppDatabase.MIGRATIONS)
             .addCallback(object : RoomDatabase.Callback() {
                 // 首次创建数据库时预置默认账户与分类，避免「记一笔」页选择不到账户/分类
                 override fun onCreate(db: SupportSQLiteDatabase) {
@@ -35,6 +45,42 @@ object DatabaseModule {
                 }
             })
             .build()
+    }
+
+    /**
+     * 每个 [BuildConfig.VERSION_CODE] 只备份一次数据库文件，保留最近 [MAX_DB_BACKUPS] 份。
+     *
+     * 触发时机是 Hilt 第一次提供 AppDatabase 的时候（主线程）。一个个人账本通常几百 KB，
+     * 复制耗时在几十毫秒量级，且每个应用版本只发生一次，不值得为它另开协程把问题复杂化。
+     * 备份失败一律忽略：宁可少一份保险，也不能让数据库打不开。
+     */
+    private fun backupDatabaseOncePerAppUpgrade(context: Context) {
+        val marker = context.getSharedPreferences("db_backup_marker", Context.MODE_PRIVATE)
+        val current = BuildConfig.VERSION_CODE
+        val previous = marker.getInt(KEY_BACKED_UP_VERSION, -1)
+        if (previous == current) return
+        runCatching {
+            val dbFile = context.getDatabasePath(AppDatabase.DB_NAME)
+            if (dbFile.exists()) {
+                val dir = File(context.filesDir, DB_BACKUP_DIR).apply { mkdirs() }
+                val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+                val target = File(dir, "${AppDatabase.DB_NAME}-v$previous-$stamp.db")
+                dbFile.copyTo(target, overwrite = true)
+                // WAL 模式下最近的写入还在 -wal 里，只拷主文件会丢掉最后几笔
+                val wal = File(dbFile.parentFile, "${AppDatabase.DB_NAME}-wal")
+                if (wal.exists()) wal.copyTo(File(dir, "${target.name}-wal"), overwrite = true)
+                dir.listFiles()
+                    ?.sortedByDescending { it.lastModified() }
+                    ?.drop(MAX_DB_BACKUPS)
+                    ?.forEach { it.delete() }
+            }
+        }
+        marker.edit().putInt(KEY_BACKED_UP_VERSION, current).apply()
+    }
+
+    private const val KEY_BACKED_UP_VERSION = "backed_up_version_code"
+    private const val DB_BACKUP_DIR = "db_backup"
+    private const val MAX_DB_BACKUPS = 5
 
     /** 预置：4 个默认账户 + 8 个支出分类 + 4 个收入分类 */
     private fun seedDefaultData(db: SupportSQLiteDatabase) {
