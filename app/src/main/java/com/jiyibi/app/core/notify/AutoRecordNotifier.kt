@@ -43,6 +43,7 @@ object AutoRecordNotifier {
      *
      * @param transactionId  新入库交易 id（同时用作通知 id，天然一笔一条）
      * @param categoryName   解析出的分类名，未分类时传 null
+     * @param accountName    落到的账户名（展示用，便于当场核对支付方式匹配是否正确）
      * @param sourcePackage  通知来源包名（微信 / 支付宝），用于展示来源
      */
     fun notifyRecorded(
@@ -52,6 +53,7 @@ object AutoRecordNotifier {
         amountCents: Long,
         note: String,
         categoryName: String?,
+        accountName: String,
         sourcePackage: String,
     ) {
         // Android 13+ 必须持有运行时通知权限，否则 notify 静默失效甚至抛 SecurityException
@@ -69,6 +71,7 @@ object AutoRecordNotifier {
         val detail = listOfNotNull(
             note.ifBlank { null },
             categoryName ?: "未分类",
+            accountName,
             PaymentPackages.displayName(sourcePackage),
         ).joinToString(" · ")
 

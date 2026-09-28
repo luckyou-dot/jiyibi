@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.jiyibi.app.core.ai.AiPaymentParser
 import com.jiyibi.app.core.data.repository.AccountPreferencesRepository
+import com.jiyibi.app.core.domain.model.Account
 import com.jiyibi.app.core.data.repository.AutoRecordPreferencesRepository
 import com.jiyibi.app.core.data.repository.MerchantCategoryRepository
 import com.jiyibi.app.core.domain.model.CategoryKind
@@ -111,7 +112,7 @@ class PaymentRecorder @Inject constructor(
         val from = occurredAt - DUPLICATE_WINDOW_MILLIS
         val to = occurredAt + DUPLICATE_WINDOW_MILLIS
 
-        val accountId: Long
+        val account: Account
         recordMutex.withLock {
             // 去重第一层：事件指纹。同一条通知被系统重投 / 更新时 key 相同，必定命中。
             if (!claimEvent(eventId, System.currentTimeMillis())) {
@@ -126,7 +127,7 @@ class PaymentRecorder @Inject constructor(
                 return
             }
 
-            accountId = resolveAccountId(parsed.type) ?: run {
+            account = resolveAccount(parsed) ?: run {
                 Log.w(TAG, "没有可用账户，跳过自动记账")
                 return
             }
@@ -146,7 +147,7 @@ class PaymentRecorder @Inject constructor(
                 id = 0L,
                 type = parsed.type,
                 amount = parsed.amountCents,
-                accountId = accountId,
+                accountId = account.id,
                 toAccountId = null,
                 categoryId = category.id,
                 // 有商户名就用商户名，否则退化为原始文案（截断，避免备注过长）
@@ -165,7 +166,7 @@ class PaymentRecorder @Inject constructor(
                 } else {
                     parsed.amountCents
                 }
-                accountRepository.adjustBalance(accountId, delta)
+                accountRepository.adjustBalance(account.id, delta)
 
                 // 记入复核队列，供「自动记账」页回溯与撤销
                 autoRecordPreferences.addRecentId(newId)
@@ -179,6 +180,7 @@ class PaymentRecorder @Inject constructor(
                         amountCents = parsed.amountCents,
                         note = transaction.note,
                         categoryName = category.displayName,
+                        accountName = account.name,
                         sourcePackage = packageName,
                     )
                 }
@@ -198,19 +200,27 @@ class PaymentRecorder @Inject constructor(
     }
 
     /**
-     * 选择记账账户：优先用「我的 → 默认账户」里配置的默认支出/收入账户，
-     * 该账户不存在时回退到账户列表第一个。
+     * 选择记账账户，按置信度从高到低：
+     *
+     * 1. **支付方式匹配**：文案里的「零钱 / 花呗 / 储蓄卡(尾号)」等支付方式
+     *    （见 [PayMethodAccountMatcher]）比"默认账户"更贴近资金真实出处——
+     *    否则用花呗付款会错扣现金余额；
+     * 2. **默认账户**：「我的 → 默认账户」配置的默认支出/收入账户；
+     * 3. 以上都落空 → 账户列表第一个。
      */
-    private suspend fun resolveAccountId(type: TransactionType): Long? {
-        val accounts = accountRepository.observeAll().first()
+    private suspend fun resolveAccount(parsed: ParsedPayment): Account? {
+        // 已归档的账户不再承接自动记账
+        val accounts = accountRepository.observeAll().first().filter { !it.archived }
         if (accounts.isEmpty()) return null
 
-        val preferred = if (type == TransactionType.EXPENSE) {
+        PayMethodAccountMatcher.match(parsed.payChannel, parsed.cardTail, accounts)?.let { return it }
+
+        val preferred = if (parsed.type == TransactionType.EXPENSE) {
             accountPreferences.defaultExpenseAccountId.first()
         } else {
             accountPreferences.defaultIncomeAccountId.first()
         }
-        return preferred?.takeIf { id -> accounts.any { it.id == id } } ?: accounts.first().id
+        return accounts.firstOrNull { it.id == preferred } ?: accounts.first()
     }
 
     /**

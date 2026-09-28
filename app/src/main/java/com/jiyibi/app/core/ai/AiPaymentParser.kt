@@ -6,6 +6,7 @@ import com.jiyibi.app.core.data.repository.AiPreferencesRepository
 import com.jiyibi.app.core.domain.model.Category
 import com.jiyibi.app.core.domain.model.TransactionType
 import com.jiyibi.app.core.notify.ParsedPayment
+import com.jiyibi.app.core.notify.PaymentNotificationParser
 import com.jiyibi.app.core.notify.PaymentPackages
 import java.math.BigDecimal
 import javax.inject.Inject
@@ -74,9 +75,12 @@ class AiPaymentParser @Inject constructor(
             append("通知内容：").append(content).append("\n\n")
             append("严格输出 JSON（不要 markdown 代码块，不要解释）：\n")
             append("{\"is_payment\": true或false, \"type\": \"expense\"或\"income\", ")
-            append("\"amount\": \"金额字符串如 35.00\", \"merchant\": \"商户或对方名称，未知为空字符串\"}\n")
+            append("\"amount\": \"金额字符串如 35.00\", \"merchant\": \"商户或对方名称，未知为空字符串\", ")
+            append("\"pay_channel\": \"实际扣款的支付方式，取值：零钱/零钱通/花呗/余额/余额宝/储蓄卡/信用卡/银行卡，")
+            append("银行卡类可带尾号如 银行卡(1234)，未知为空字符串\"}\n")
             append("注意：营销推送、群消息、待付款、支付失败都不算已完成；")
-            append("amount 取实际支付金额，不要取账户余额。")
+            append("amount 取实际支付金额，不要取账户余额；")
+            append("pay_channel 只取实际付款的那一个，文案里的账户余额提示不算。")
         }
 
         val raw = chat(config, SYSTEM_PROMPT, userPrompt) ?: return null
@@ -198,12 +202,16 @@ class AiPaymentParser @Inject constructor(
                     .toLong()
                 if (cents <= 0L) return@runCatching null
 
+                val payChannel = obj.optString("pay_channel").trim().ifBlank { null }
                 ParsedPayment(
                     amountCents = cents,
                     type = type,
                     merchant = obj.optString("merchant").trim(),
                     rawText = raw.trim().take(120),
                     matchedRule = "AI",
+                    payChannel = payChannel,
+                    // 模型可能返回「银行卡(1234)」这类复合串，尾号从串里再抠一次
+                    cardTail = payChannel?.let { PaymentNotificationParser.extractCardTail(it) },
                 )
             }.getOrNull()
         }

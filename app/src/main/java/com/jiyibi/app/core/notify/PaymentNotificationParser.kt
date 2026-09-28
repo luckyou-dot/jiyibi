@@ -36,6 +36,9 @@ object PaymentPackages {
  * @property merchant     商户 / 对方名称，解析不到时为空串
  * @property rawText      通知原始文案，写入备注便于人工核对
  * @property matchedRule  命中的规则名，便于调规则时定位
+ * @property payChannel   支付方式标签（零钱/零钱通/花呗/余额/余额宝/银行卡/信用卡），
+ *                        文案未提及时为 null，供「按支付方式选账户」使用
+ * @property cardTail     银行卡尾号（4 位），可精确对上用户自建的银行卡账户
  */
 data class ParsedPayment(
     val amountCents: Long,
@@ -43,6 +46,8 @@ data class ParsedPayment(
     val merchant: String,
     val rawText: String,
     val matchedRule: String,
+    val payChannel: String? = null,
+    val cardTail: String? = null,
 )
 
 /**
@@ -200,6 +205,30 @@ object PaymentNotificationParser {
     )
 
     /**
+     * 支付方式标签 → 匹配正则，按**具体到泛化**排序（零钱通先于零钱、余额宝先于余额）。
+     *
+     * 「余额」一条做了双重防护：负向前瞻排除「余额宝」，负向后顾排除
+     * 「当前/账户/可用余额」——那是文案里夹带的**账户余额描述**，不是支付方式，
+     * 若不排除，「当前余额¥1000，已支付¥35」会被误判成用支付宝余额付款。
+     */
+    private val PAY_CHANNEL_PATTERNS: List<Pair<String, Regex>> = listOf(
+        "零钱通" to Regex("零钱通"),
+        "零钱" to Regex("零钱"),
+        "花呗" to Regex("花呗"),
+        "余额宝" to Regex("余额宝"),
+        "余额" to Regex("(?<!当前)(?<!账户)(?<!可用)余额(?!宝)"),
+        "信用卡" to Regex("信用卡"),
+        "储蓄卡" to Regex("储蓄卡"),
+        "银行卡" to Regex("银行卡"),
+    )
+
+    /** 银行卡尾号的两种真实形态：「尾号1234」「储蓄卡(1234)」 */
+    private val CARD_TAIL_PATTERNS = listOf(
+        Regex("尾号\\s*[:：]?\\s*(\\d{4})"),
+        Regex("(?:储蓄卡|信用卡|银行卡)\\s*[（(]\\s*(\\d{4})\\s*[）)]"),
+    )
+
+    /**
      * 商户关键词 → 分类名（按应用内置的分类名匹配，匹配不到则返回 null 交给用户补分类）。
      *
      * 这里只做「锦上添花」的猜测：命中就预填分类，否则留空（未分类），
@@ -270,6 +299,8 @@ object PaymentNotificationParser {
             merchant = extractMerchant(rawText),
             rawText = rawText,
             matchedRule = rule.name,
+            payChannel = extractPayChannel(rawText),
+            cardTail = extractCardTail(rawText),
         )
     }
 
@@ -292,6 +323,17 @@ object PaymentNotificationParser {
         }
         return ""
     }
+
+    /** 提取支付方式标签（零钱/花呗/银行卡等），文案未提及时返回 null */
+    private fun extractPayChannel(text: String): String? =
+        PAY_CHANNEL_PATTERNS.firstOrNull { (_, regex) -> regex.containsMatchIn(text) }?.first
+
+    /**
+     * 提取银行卡尾号（4 位）。public 供 AI 解析路径复用
+     * （模型返回的 pay_channel 可能是「银行卡(1234)」这类复合串）。
+     */
+    fun extractCardTail(text: String): String? =
+        CARD_TAIL_PATTERNS.firstNotNullOfOrNull { it.find(text)?.groupValues?.getOrNull(1) }
 
     /**
      * 按商户关键词猜测分类名。

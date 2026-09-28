@@ -150,6 +150,83 @@ class PaymentNotificationParserTest {
         assertEquals(3500L, parsed?.amountCents)
     }
 
+    // ---------- 支付方式提取（按支付方式选账户） ----------
+
+    @Test
+    fun `支付方式零钱`() {
+        val parsed = PaymentNotificationParser.parse(
+            PaymentPackages.WECHAT,
+            title = "服务通知",
+            content = "微信支付：已支付￥35.00，支付方式：零钱",
+        )
+        assertEquals("零钱", parsed?.payChannel)
+        assertNull(parsed?.cardTail)
+    }
+
+    @Test
+    fun `支付方式储蓄卡带尾号`() {
+        val parsed = PaymentNotificationParser.parse(
+            PaymentPackages.WECHAT,
+            title = "服务通知",
+            content = "微信支付：已支付￥35.00，从储蓄卡(1234)扣款",
+        )
+        assertEquals("储蓄卡", parsed?.payChannel)
+        assertEquals("1234", parsed?.cardTail)
+    }
+
+    @Test
+    fun `支付方式银行卡尾号形态`() {
+        val parsed = PaymentNotificationParser.parse(
+            PaymentPackages.ALIPAY,
+            title = "支付助手",
+            content = "成功付款35.00元，银行卡尾号8899，给肯德基",
+        )
+        assertEquals("银行卡", parsed?.payChannel)
+        assertEquals("8899", parsed?.cardTail)
+    }
+
+    @Test
+    fun `花呗支付识别`() {
+        val parsed = PaymentNotificationParser.parse(
+            PaymentPackages.ALIPAY,
+            title = "支付宝",
+            content = "交易成功：付款￥99.90 花呗支付 给某某超市",
+        )
+        assertEquals("花呗", parsed?.payChannel)
+    }
+
+    @Test
+    fun `余额宝优先于余额`() {
+        val parsed = PaymentNotificationParser.parse(
+            PaymentPackages.ALIPAY,
+            title = "支付宝",
+            content = "交易成功：付款￥10.00，余额宝",
+        )
+        assertEquals("余额宝", parsed?.payChannel)
+    }
+
+    @Test
+    fun `文案中的账户余额不算支付方式`() {
+        // 「当前余额¥1000」是余额描述不是支付方式，不能因此把账记到支付宝余额
+        val parsed = PaymentNotificationParser.parse(
+            PaymentPackages.WECHAT,
+            title = "服务通知",
+            content = "微信支付：当前余额¥1000.00，已支付¥35.00",
+        )
+        assertNull(parsed?.payChannel)
+    }
+
+    @Test
+    fun `未提及支付方式时为null`() {
+        val parsed = PaymentNotificationParser.parse(
+            PaymentPackages.WECHAT,
+            title = "服务通知",
+            content = "微信支付：已支付￥35.00，付款给星巴克",
+        )
+        assertNull(parsed?.payChannel)
+        assertNull(parsed?.cardTail)
+    }
+
     // ---------- 应忽略 / 应返回 null ----------
 
     @Test
