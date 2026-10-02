@@ -14,8 +14,8 @@ android {
         applicationId = "com.jiyibi.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 9
-        versionName = "1.08"
+        versionCode = 16
+        versionName = "1.15"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
