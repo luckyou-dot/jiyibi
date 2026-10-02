@@ -108,6 +108,7 @@ object DatabaseModule {
             Triple("居住", "Home", 0xFF8D6E63.toInt()),
             Triple("医疗", "LocalHospital", 0xFFEF5350.toInt()),
             Triple("教育", "School", 0xFF5C6BC0.toInt()),
+            Triple("转账", "SwapHoriz", 0xFF26A69A.toInt()),
             Triple("其他", "Category", 0xFF78909C.toInt()),
         )
         expenseCategories.forEachIndexed { idx, (name, icon, color) ->

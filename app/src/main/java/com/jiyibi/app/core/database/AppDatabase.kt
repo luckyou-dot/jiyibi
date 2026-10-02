@@ -4,6 +4,7 @@ import androidx.room.Database
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
 import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.jiyibi.app.core.database.dao.AccountDao
 import com.jiyibi.app.core.database.dao.BudgetDao
 import com.jiyibi.app.core.database.dao.CategoryDao
@@ -31,7 +32,7 @@ import com.jiyibi.app.core.database.entity.TransactionEntity
         RecurringRuleEntity::class,
         DebtEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -47,7 +48,7 @@ abstract class AppDatabase : RoomDatabase() {
         const val DB_NAME = "jiyibi.db"
 
         /**
-         * 显式迁移表，**目前为空是合法的**（当前版本号 2 是随首批实体一起建立的）。
+         * 显式迁移表。
          *
          * 本项目刻意**不用** `fallbackToDestructiveMigration()`：那个开关一旦生效，
          * 只要版本号提升而没有配好 Migration，Room 就会删表重建 —— 用户的全部账目
@@ -63,6 +64,19 @@ abstract class AppDatabase : RoomDatabase() {
          * 2. 对照 N-1.json 与 N.json 的差异写 `Migration(N-1, N)`，加进本数组；
          * 3. 用旧版本 APK 造数据 → 覆盖安装新版本 → 确认数据仍在（别只测全新安装）。
          */
-        val MIGRATIONS: Array<Migration> = emptyArray()
+        val MIGRATIONS: Array<Migration> = arrayOf(
+            // v3：补预置支出分类「转账」。种子数据只在 onCreate 插入，
+            // 存量用户（v2 建的库）拿不到新分类，必须用迁移补齐。
+            // sortOrder 接在「其他」(7) 之后；builtin=1 与其余预置分类一致。
+            object : Migration(2, 3) {
+                override fun migrate(db: SupportSQLiteDatabase) {
+                    db.execSQL(
+                        "INSERT INTO categories (name, kind, icon, color, sortOrder, builtin, archived) " +
+                            "SELECT '转账', 'EXPENSE', 'SwapHoriz', 0xFF26A69A, 8, 1, 0 " +
+                            "WHERE NOT EXISTS (SELECT 1 FROM categories WHERE name = '转账' AND kind = 'EXPENSE')",
+                    )
+                }
+            },
+        )
     }
 }
