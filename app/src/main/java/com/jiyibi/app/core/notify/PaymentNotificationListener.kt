@@ -80,54 +80,71 @@ class PaymentNotificationListener : NotificationListenerService() {
         if (packageName !in PaymentPackages.WATCHED) return
 
         val read = readText(notification)
-        val parsed = PaymentNotificationParser.parse(packageName, read.title, read.content)
-        if (parsed == null) {
-            // 未命中：先试 AI 兜底（配置了 Key 才会真正发起请求），
-            // AI 也啃不动再进未识别队列——只打 Logcat 用户根本看不到。
-            Log.d(
-                PaymentRecorder.TAG,
-                "未命中 [${PaymentPackages.displayName(packageName)}] " +
-                    "title=「${read.title}」 content=「${read.content}」",
-            )
-            val occurredAt = if (sbn.postTime > 0L) sbn.postTime else System.currentTimeMillis()
-            scope.launch {
-                val aiParsed = if (aiParser.isConfigured()) {
-                    runCatching {
-                        aiParser.parsePaymentNotification(packageName, read.title, read.content)
-                    }.getOrNull()
-                } else {
-                    null
-                }
-                if (aiParsed != null) {
-                    Log.i(PaymentRecorder.TAG, "AI 兜底解析成功：${read.content.take(40)}")
-                    recorder.recordAsync(
-                        source = "AI通知",
-                        packageName = packageName,
-                        occurredAt = occurredAt,
-                        parsed = aiParsed,
-                        // 通知 key：同一条通知被系统重投 / 更新时 key 不变，供落库器精确判重
-                        eventId = sbn.key,
-                    )
-                } else {
-                    unmatchedNotificationRepository.add(
-                        packageName = packageName,
-                        title = read.title,
-                        content = read.content,
-                        postedAt = occurredAt,
-                    )
+        when (val outcome = PaymentNotificationParser.parseDetailed(packageName, read.title, read.content)) {
+            is PaymentNotificationParser.ParseOutcome.Matched -> {
+                recorder.recordAsync(
+                    source = "通知",
+                    packageName = packageName,
+                    occurredAt = if (sbn.postTime > 0L) sbn.postTime else System.currentTimeMillis(),
+                    parsed = outcome.payment,
+                    eventId = sbn.key,
+                )
+            }
+
+            PaymentNotificationParser.ParseOutcome.Ignored -> Unit
+
+            PaymentNotificationParser.ParseOutcome.NoMatch -> {
+                // 未命中：先排除两类不值得关注的，再 AI 兜底，最后进未识别队列
+                // 1) 聊天会话通知（MessagingStyle 是系统级标记）——绝不是支付；
+                // 2) 无金额形态、无支付词的普通推送——不是「漏掉的支付句式」。
+                // 未识别队列的使命是发现漏掉的支付句式，被聊天刷屏就废了。
+                if (isChatConversation(notification)) return
+                if (!PaymentNotificationParser.looksLikePaymentText(read.title, read.content)) return
+
+                Log.d(
+                    PaymentRecorder.TAG,
+                    "未命中 [${PaymentPackages.displayName(packageName)}] " +
+                        "title=「${read.title}」 content=「${read.content}」",
+                )
+                val occurredAt = if (sbn.postTime > 0L) sbn.postTime else System.currentTimeMillis()
+                scope.launch {
+                    val aiParsed = if (aiParser.isConfigured()) {
+                        runCatching {
+                            aiParser.parsePaymentNotification(packageName, read.title, read.content)
+                        }.getOrNull()
+                    } else {
+                        null
+                    }
+                    if (aiParsed != null) {
+                        Log.i(PaymentRecorder.TAG, "AI 兜底解析成功：${read.content.take(40)}")
+                        recorder.recordAsync(
+                            source = "AI通知",
+                            packageName = packageName,
+                            occurredAt = occurredAt,
+                            parsed = aiParsed,
+                            // 通知 key：同一条通知被系统重投 / 更新时 key 不变，供落库器精确判重
+                            eventId = sbn.key,
+                        )
+                    } else {
+                        unmatchedNotificationRepository.add(
+                            packageName = packageName,
+                            title = read.title,
+                            content = read.content,
+                            postedAt = occurredAt,
+                        )
+                    }
                 }
             }
-            return
         }
-
-        recorder.recordAsync(
-            source = "通知",
-            packageName = packageName,
-            occurredAt = if (sbn.postTime > 0L) sbn.postTime else System.currentTimeMillis(),
-            parsed = parsed,
-            eventId = sbn.key,
-        )
     }
+
+    /**
+     * 是否聊天会话通知：微信 / 支付宝的聊天消息用 MessagingStyle 发系统通知，
+     * [Notification.EXTRA_MESSAGES] 存在即聊天——系统级标记，比文本启发可靠得多。
+     * 聊天永远不是支付，AI 兜底与未识别队列都不必惊动。
+     */
+    private fun isChatConversation(notification: Notification): Boolean =
+        notification.extras?.getParcelableArray(Notification.EXTRA_MESSAGES) != null
 
     override fun onDestroy() {
         super.onDestroy()

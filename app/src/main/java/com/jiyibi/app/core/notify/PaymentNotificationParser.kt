@@ -247,6 +247,8 @@ object PaymentNotificationParser {
             "淘宝", "天猫", "京东", "拼多多", "超市", "便利店", "商场", "优衣库",
             "盒马", "永辉", "沃尔玛", "7-11", "全家", "罗森",
         ),
+        // 个人转账（无商户语义）单独归转账，别落进未分类
+        "转账" to listOf("转账给", "已转账给", "转账成功", "向XX付款", "付款给个人"),
         "娱乐" to listOf("电影", "游戏", "KTV", "演唱会", "视频会员", "音乐", "腾讯视频", "爱奇艺", "哔哩哔哩"),
         "居住" to listOf("房租", "水费", "电费", "燃气", "物业", "宽带", "取暖", "租金"),
         "医疗" to listOf("医院", "药店", "药房", "诊所", "挂号", "体检", "门诊"),
@@ -260,6 +262,44 @@ object PaymentNotificationParser {
     )
 
     /**
+     * 解析结果三态，供通知监听器区分「明确非支付」与「疑似支付但没识别出」：
+     * 后者才值得 AI 兜底与进未识别队列，前者一概静默丢弃。
+     */
+    sealed interface ParseOutcome {
+        /** 命中规则并解析出金额 */
+        data class Matched(val payment: ParsedPayment) : ParseOutcome
+
+        /** 明确非支付：白名单外包名 / 空文案 / 黑名单命中（营销、群聊等） */
+        object Ignored : ParseOutcome
+
+        /** 疑似支付但规则未命中（新句式）——值得 AI 兜底与人工关注 */
+        object NoMatch : ParseOutcome
+    }
+
+    /**
+     * 判定一段通知文案是否"疑似支付"：含金额形态或支付相关词。
+     *
+     * 未识别队列与 AI 兜底的前置门：聊天残余（「真觉得自己999李信无敌了」）
+     * 与普通推送没有这些特征，不值得占用队列位次，更不值得发给大模型。
+     */
+    fun looksLikePaymentText(title: String, content: String): Boolean {
+        val text = "$title $content"
+        return MONEY_SHAPES.any { it.containsMatchIn(text) } ||
+            PAYMENT_HINT_WORDS.any { text.contains(it) }
+    }
+
+    /** 金额形态：¥12 / 12.5元 */
+    private val MONEY_SHAPES = listOf(
+        Regex("[¥￥]\\s*[0-9]"),
+        Regex("[0-9](?:\\.[0-9]{1,2})?\\s*元"),
+    )
+
+    /** 支付相关词：不含「转」「付」这类单字（聊天里太常见，误放行） */
+    private val PAYMENT_HINT_WORDS = listOf(
+        "收款", "支付", "付款", "转账", "扣款", "退款", "入账", "到账", "交易",
+    )
+
+    /**
      * 解析一条通知。
      *
      * @param packageName 通知来源包名（必须来自 [PaymentPackages.WATCHED]，否则返回 null）
@@ -267,8 +307,15 @@ object PaymentNotificationParser {
      * @param content     通知正文（应已按 BigText / TextLines 优先级取过完整文案）
      * @return 解析结果；非支付通知、被忽略、或解析不出金额时返回 null
      */
-    fun parse(packageName: String, title: String, content: String): ParsedPayment? {
-        if (packageName !in PaymentPackages.WATCHED) return null
+    fun parse(packageName: String, title: String, content: String): ParsedPayment? =
+        when (val outcome = parseDetailed(packageName, title, content)) {
+            is ParseOutcome.Matched -> outcome.payment
+            else -> null
+        }
+
+    /** 三态版解析：通知监听器用它区分「该丢弃」与「该兜底/入队」 */
+    fun parseDetailed(packageName: String, title: String, content: String): ParseOutcome {
+        if (packageName !in PaymentPackages.WATCHED) return ParseOutcome.Ignored
 
         // 标题与正文拼起来一起看：部分通知把商户名放在标题、金额放在正文。
         // 但泛化标题（"服务通知"等）没有信息量，跳过以免干扰黑名单与商户提取。
@@ -279,30 +326,148 @@ object PaymentNotificationParser {
             .filter { !it.isNullOrBlank() }
             .joinToString(" ")
             .trim()
-        if (rawText.isEmpty()) return null
+        if (rawText.isEmpty()) return ParseOutcome.Ignored
 
         // 1. 黑名单：命中即不是支付通知
-        if (IGNORE_KEYWORDS.any { rawText.contains(it) }) return null
+        if (IGNORE_KEYWORDS.any { rawText.contains(it) }) return ParseOutcome.Ignored
 
         // 2. 有序规则表
         val rule = RULES.firstOrNull { r ->
             packageName in r.packages && r.keywords.any { rawText.contains(it) }
-        } ?: return null
+        } ?: return ParseOutcome.NoMatch
 
         // 3. 金额：先锚定方向关键词，再通用兜底
-        val amountCents = extractAmountCents(rawText) ?: return null
+        val amountCents = extractAmountCents(rawText) ?: return ParseOutcome.NoMatch
+        if (amountCents <= 0L) return ParseOutcome.NoMatch
+
+        return ParseOutcome.Matched(
+            ParsedPayment(
+                amountCents = amountCents,
+                type = rule.type,
+                merchant = extractMerchant(rawText),
+                rawText = rawText,
+                matchedRule = rule.name,
+                payChannel = extractPayChannel(rawText),
+                cardTail = extractCardTail(rawText),
+            ),
+        )
+    }
+
+    /**
+     * 极简支付成功页解析（无障碍专用兜底）。
+     *
+     * 真机观测（2026-10，微信 8.x）：向个人付款的支付成功页整页只有
+     * 「¥0.01 桃桃乐（**悦）」两三个词——"支付成功"等方向词是图片渲染，
+     * 不暴露给无障碍，标准规则必然未命中。
+     *
+     * **安全前提**：只在无障碍服务确认用户处于支付流程（放行窗口内）时调用——
+     * 上下文本身已提供"这是支付结果页"的证据，因此不要求方向关键词。
+     * 防误读改为三道窄门：
+     * 1. 文本必须极短（≤ [MINIMAL_MAX_TOKENS] 个词）：金额输入键盘页有十几个词，必然被挡；
+     * 2. 必须恰好含一个带（或不带）货币前缀的金额词；
+     * 3. 命中 [IGNORE_KEYWORDS] 黑名单或「失败 / 取消 / 超时」字样的一律不记。
+     */
+    fun parseMinimalSuccess(packageName: String, text: String): ParsedPayment? {
+        if (packageName !in PaymentPackages.WATCHED) return null
+        if (IGNORE_KEYWORDS.any { text.contains(it) }) return null
+
+        val tokens = text.split(Regex("\\s+")).filter { it.isNotBlank() }
+        if (tokens.size !in 2..MINIMAL_MAX_TOKENS) return null
+        if (tokens.any { FAIL_TOKENS.any(it::contains) }) return null
+
+        val amountToken = tokens.firstOrNull { MINIMAL_AMOUNT_TOKEN.matches(it) } ?: return null
+        val amountCents = runCatching {
+            BigDecimal(amountToken.trim('¥', '￥', '元'))
+                .movePointRight(2)
+                .setScale(0, RoundingMode.HALF_UP)
+                .toLong()
+        }.getOrNull() ?: return null
         if (amountCents <= 0L) return null
+
+        // 商户两级提取（真机观测：成功页可能是「¥0.01 摇一摇，有优惠 桃桃乐（**悦）」，
+        // 营销文案插在金额和收款人之间，取"第一个文字词"会拿到营销词）：
+        // 1. 优先含微信打码括号（**x）的词——收款人实名显示的强特征；
+        // 2. 否则取最后一个非噪声文字词——成功页布局收款人靠后、营销词靠前
+        val merchant = tokens
+            .firstOrNull { MASKED_NAME_TOKEN.containsMatchIn(it) }
+            ?: tokens.lastOrNull {
+                it != amountToken && !isMinimalNoise(it) && it.any(Char::isLetter)
+            }
+            .orEmpty()
 
         return ParsedPayment(
             amountCents = amountCents,
-            type = rule.type,
-            merchant = extractMerchant(rawText),
-            rawText = rawText,
-            matchedRule = rule.name,
-            payChannel = extractPayChannel(rawText),
-            cardTail = extractCardTail(rawText),
+            type = TransactionType.EXPENSE,
+            merchant = merchant,
+            rawText = text,
+            matchedRule = "极简成功页",
         )
     }
+
+    /** 极简成功页文本的词数上限：超过它更像键盘页 / 列表页而非结果页 */
+    private const val MINIMAL_MAX_TOKENS = 6
+
+    /** 支付未完成的结果词：出现即绝不记账 */
+    private val FAIL_TOKENS = listOf("失败", "取消", "超时")
+
+    /** 金额词形态：¥0.01 / ￥12 / 0.5元 等 */
+    private val MINIMAL_AMOUNT_TOKEN = Regex("^[¥￥]?[0-9]+(?:\\.[0-9]{1,2})?元?$")
+
+    /** 微信收款人的打码实名形态：桃桃乐（**悦）——括号加两个星，强特征 */
+    private val MASKED_NAME_TOKEN = Regex("（\\*\\*|\\(\\*\\*")
+
+    /** 成功页上的 UI / 营销噪声词：不能当商户名（按包含判断，挡「摇一摇，有优惠」这类文案） */
+    private val MINIMAL_UI_NOISE_TOKENS = listOf(
+        "微信支付", "付款", "支付", "支付成功", "完成", "返回", "确定", "浮窗",
+        "摇一摇", "优惠", "领取", "活动", "返现", "立减", "红包",
+    )
+
+    private fun isMinimalNoise(token: String): Boolean =
+        MINIMAL_UI_NOISE_TOKENS.any(token::contains)
+
+    /**
+     * 清洗读屏文本，供备注降级使用（商户名提取不到时才填备注）。
+     *
+     * 无障碍读屏读到的是整块窗口，混有大量与支付无关的系统 UI 文本——
+     * 真机观测（2026-10，微信支付凭证横幅弹出的瞬间）：
+     * 「11:01 10月2日 周五 微信支付 下午11:01 [7条]微信支付: 已支付¥2.00 2 已连接到 USB 调试」
+     * 状态栏时间 / 日期 / 周几 / [N条] / 独立数字 / 域名 / 系统通知短语
+     * 都有固定形态，按词剔除即可，无需动用大模型。
+     */
+    fun sanitizeForNote(text: String): String = text
+        .replace(USB_DEBUG_NOTICE, " ")
+        .split(Regex("\\s+"))
+        // 「[7条]微信支付:」——[N条] 是粘在词上的前缀，先剥离再判噪声
+        .map { token -> NOTE_COUNT_PREFIX.replace(token, "") }
+        .filterNot { token ->
+            token.isBlank() ||
+                NOTE_TIME_TOKEN.matches(token) ||
+                NOTE_DATE_TOKEN.matches(token) ||
+                NOTE_WEEK_TOKEN.matches(token) ||
+                token.all(Char::isDigit) ||
+                NOTE_HOST_TOKEN.matches(token)
+        }
+        .filter { it.isNotBlank() }
+        .joinToString(" ")
+        .trim()
+
+    /** 调试期开 USB 时系统横幅会混进读屏文本，整段剔除 */
+    private val USB_DEBUG_NOTICE = Regex("已连接到\\s*USB\\s*调试")
+
+    /** 11:01 / 下午11:01 / 上午9:05:30 */
+    private val NOTE_TIME_TOKEN = Regex("^([上下]午|凌晨|早上|中午)?\\d{1,2}:\\d{2}(?::\\d{2})?$")
+
+    /** 10月2日 / 2026年10月2日 */
+    private val NOTE_DATE_TOKEN = Regex("^(\\d{4}年)?\\d{1,2}月\\d{1,2}日$")
+
+    /** 周五 / 星期五 */
+    private val NOTE_WEEK_TOKEN = Regex("^(周|星期)[一二三四五六日天]$")
+
+    /** [7条] 微信消息计数前缀（粘在词首，剥离子用） */
+    private val NOTE_COUNT_PREFIX = Regex("^\\[\\d+条]")
+
+    /** 域名 / URL：h5.jrywl.com、https://pay.xxx.com/q */
+    private val NOTE_HOST_TOKEN = Regex("^(https?://)?[a-z0-9-]+(\\.[a-z0-9-]+)+(/\\S*)?$", RegexOption.IGNORE_CASE)
 
     /** 提取金额并转成「分」；解析不出返回 null */
     private fun extractAmountCents(text: String): Long? {

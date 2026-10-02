@@ -150,8 +150,11 @@ class PaymentRecorder @Inject constructor(
                 accountId = account.id,
                 toAccountId = null,
                 categoryId = category.id,
-                // 有商户名就用商户名，否则退化为原始文案（截断，避免备注过长）
-                note = parsed.merchant.ifBlank { parsed.rawText }.take(NOTE_MAX_LENGTH),
+                // 有商户名就用商户名；否则用清洗后的文案——读屏文本混有状态栏时间、
+                // 系统通知等噪声，先剔除再入备注，避免"乱七八糟"
+                note = parsed.merchant.ifBlank {
+                    PaymentNotificationParser.sanitizeForNote(parsed.rawText)
+                }.take(NOTE_MAX_LENGTH),
                 tags = emptyList(),
                 date = occurredAt,
             )

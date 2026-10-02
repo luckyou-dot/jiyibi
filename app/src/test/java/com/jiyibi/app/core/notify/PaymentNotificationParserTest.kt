@@ -2,7 +2,9 @@ package com.jiyibi.app.core.notify
 
 import com.jiyibi.app.core.domain.model.TransactionType
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -225,6 +227,217 @@ class PaymentNotificationParserTest {
         )
         assertNull(parsed?.payChannel)
         assertNull(parsed?.cardTail)
+    }
+
+    // ---------- 极简成功页（无障碍放行窗口内专用兜底） ----------
+
+    @Test
+    fun `极简成功页金额加收款人`() {
+        // 真机观测（2026-10，微信 8.x 向个人付款成功页的完整读屏文本）：
+        // 整页没有方向词（"支付成功"是图片渲染），标准规则必然未命中
+        val parsed = PaymentNotificationParser.parseMinimalSuccess(
+            PaymentPackages.WECHAT,
+            "¥0.01 桃桃乐（**悦）",
+        )
+        assertEquals(1L, parsed?.amountCents)
+        assertEquals(TransactionType.EXPENSE, parsed?.type)
+        assertEquals("桃桃乐（**悦）", parsed?.merchant)
+    }
+
+    @Test
+    fun `极简成功页营销文案不抢占商户名`() {
+        // 真机观测：成功页为「¥0.01 摇一摇，有优惠 桃桃乐（**悦）」——
+        // 营销词插在金额与收款人之间，商户必须取打码实名而非营销文案
+        val parsed = PaymentNotificationParser.parseMinimalSuccess(
+            PaymentPackages.WECHAT,
+            "¥0.01 摇一摇，有优惠 桃桃乐（**悦）",
+        )
+        assertEquals(1L, parsed?.amountCents)
+        assertEquals("桃桃乐（**悦）", parsed?.merchant)
+    }
+
+    @Test
+    fun `极简成功页无打码形态时商户取末位文字词`() {
+        // 收款人无打码括号时退化为"最后一个非噪声文字词"（布局上收款人靠后）
+        val parsed = PaymentNotificationParser.parseMinimalSuccess(
+            PaymentPackages.ALIPAY,
+            "¥12.00 立减优惠 某某超市",
+        )
+        assertEquals(1200L, parsed?.amountCents)
+        assertEquals("某某超市", parsed?.merchant)
+    }
+
+    @Test
+    fun `极简成功页不带货币符号的金额`() {
+        val parsed = PaymentNotificationParser.parseMinimalSuccess(
+            PaymentPackages.WECHAT,
+            "12.5元 某某",
+        )
+        assertEquals(1250L, parsed?.amountCents)
+    }
+
+    @Test
+    fun `金额输入键盘页不误判`() {
+        // 真机观测：输入页有十几个词（数字键盘 + 标签），词数门槛必须挡住
+        assertNull(
+            PaymentNotificationParser.parseMinimalSuccess(
+                PaymentPackages.WECHAT,
+                "付款 1 2 3 4 5 6 7 8 9 0 . 付款 付款给个人 桃桃乐（**悦） 金额 添加备注 0.01",
+            ),
+        )
+    }
+
+    @Test
+    fun `指纹与加载提示不误判`() {
+        // 真机观测：流程中的弹层文本，均无金额词
+        assertNull(PaymentNotificationParser.parseMinimalSuccess(PaymentPackages.WECHAT, "请验证指纹"))
+        assertNull(PaymentNotificationParser.parseMinimalSuccess(PaymentPackages.WECHAT, "正在加载…"))
+        assertNull(PaymentNotificationParser.parseMinimalSuccess(PaymentPackages.WECHAT, "微信支付"))
+    }
+
+    @Test
+    fun `失败取消结果不记账`() {
+        assertNull(
+            PaymentNotificationParser.parseMinimalSuccess(
+                PaymentPackages.WECHAT,
+                "支付失败 ¥0.01 桃桃乐",
+            ),
+        )
+        assertNull(
+            PaymentNotificationParser.parseMinimalSuccess(
+                PaymentPackages.WECHAT,
+                "已取消 ¥0.01",
+            ),
+        )
+    }
+
+    @Test
+    fun `极简页黑名单词不记账`() {
+        // 营销 / 理财类短文案即使带金额也不许进
+        assertNull(
+            PaymentNotificationParser.parseMinimalSuccess(
+                PaymentPackages.ALIPAY,
+                "余额宝收益 ¥1.00 已到账",
+            ),
+        )
+    }
+
+    @Test
+    fun `极简页纯UI词无金额不记账`() {
+        assertNull(
+            PaymentNotificationParser.parseMinimalSuccess(
+                PaymentPackages.WECHAT,
+                "浮窗 完成",
+            ),
+        )
+    }
+
+    @Test
+    fun `极简页白名单外包名不记账`() {
+        assertNull(
+            PaymentNotificationParser.parseMinimalSuccess(
+                "com.example.other",
+                "¥0.01 某某",
+            ),
+        )
+    }
+
+    // ---------- 疑似支付判定（未识别队列与 AI 兜底的前置门） ----------
+
+    @Test
+    fun `聊天残余不含支付特征`() {
+        // 真机观测：聊天通知「真觉得自己999李信无敌了」——有数字但无金额形态无支付词
+        assertFalse(
+            PaymentNotificationParser.looksLikePaymentText("桃桃乐", "[2条]桃桃乐: 真觉得自己999李信无敌了"),
+        )
+    }
+
+    @Test
+    fun `金额符号算支付特征`() {
+        assertTrue(PaymentNotificationParser.looksLikePaymentText("服务通知", "您有一笔 ¥35.00 的消费"))
+    }
+
+    @Test
+    fun `N元形态算支付特征`() {
+        assertTrue(PaymentNotificationParser.looksLikePaymentText("支付助手", "成功付款35.00元"))
+    }
+
+    @Test
+    fun `支付词算支付特征`() {
+        assertTrue(PaymentNotificationParser.looksLikePaymentText("微信", "有一笔待确认的收款"))
+    }
+
+    @Test
+    fun `普通闲聊不算支付特征`() {
+        assertFalse(PaymentNotificationParser.looksLikePaymentText("张三", "今晚一起吃饭吗"))
+    }
+
+    // ---------- 三态解析 ----------
+
+    @Test
+    fun `黑名单命中归为Ignored而非NoMatch`() {
+        // 明确非支付（营销推送）不该进未识别队列——队列只收「疑似漏掉的支付句式」
+        assertEquals(
+            PaymentNotificationParser.ParseOutcome.Ignored,
+            PaymentNotificationParser.parseDetailed(
+                PaymentPackages.ALIPAY,
+                title = "支付宝",
+                content = "蚂蚁森林：你有新的能量可以收取啦",
+            ),
+        )
+    }
+
+    @Test
+    fun `规则未命中的疑似文案归为NoMatch`() {
+        assertEquals(
+            PaymentNotificationParser.ParseOutcome.NoMatch,
+            PaymentNotificationParser.parseDetailed(
+                PaymentPackages.WECHAT,
+                title = "服务通知",
+                content = "您刚刚成功消费35.00元，点击查看详情",
+            ),
+        )
+    }
+
+    @Test
+    fun `命中规则归为Matched`() {
+        val outcome = PaymentNotificationParser.parseDetailed(
+            PaymentPackages.WECHAT,
+            title = "服务通知",
+            content = "微信支付：已支付￥35.00，付款给星巴克",
+        )
+        assertTrue(outcome is PaymentNotificationParser.ParseOutcome.Matched)
+        assertEquals(3500L, (outcome as PaymentNotificationParser.ParseOutcome.Matched).payment.amountCents)
+    }
+
+    // ---------- 备注文本清洗（读屏噪声剔除） ----------
+
+    @Test
+    fun `读屏文本剔除状态栏与系统通知噪声`() {
+        // 真机观测（2026-10）：支付凭证横幅弹出的瞬间，读屏扫到整块通知栏
+        val cleaned = PaymentNotificationParser.sanitizeForNote(
+            "11:01 10月2日 周五 微信支付 下午11:01 [7条]微信支付: 已支付¥2.00 2 已连接到 USB 调试",
+        )
+        assertEquals("微信支付 微信支付: 已支付¥2.00", cleaned)
+    }
+
+    @Test
+    fun `清洗剔除域名与URL`() {
+        // 真机观测：H5 收银台页面读屏首词是 host
+        assertEquals(
+            "微信支付手机版 微信支付 ¥2.00",
+            PaymentNotificationParser.sanitizeForNote(
+                "h5.jrywl.com 微信支付手机版 微信支付 ¥2.00",
+            ),
+        )
+    }
+
+    @Test
+    fun `正常通知文本清洗后不受影响`() {
+        assertEquals(
+            "微信支付：已支付￥35.00，付款给星巴克",
+            PaymentNotificationParser.sanitizeForNote("微信支付：已支付￥35.00，付款给星巴克"),
+        )
     }
 
     // ---------- 应忽略 / 应返回 null ----------
