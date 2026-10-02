@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 12+（API 31+）云备份与设备迁移规则。
+
+  排除两个敏感 DataStore：
+  - ai_preferences：AI 兜底解析的 API Key（明文落盘，不能随云备份上传）；
+  - unmatched_notifications：未识别通知的原文快照（含金额与商户，隐私面更大）。
+
+  恢复后这两项为出厂空值：AI 需重新填 Key，未识别队列从空开始——
+  都是可接受的代价，换取敏感数据不进 Google 云。
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="file" path="datastore/ai_preferences.preferences_pb" />
+        <exclude domain="file" path="datastore/unmatched_notifications.preferences_pb" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="file" path="datastore/ai_preferences.preferences_pb" />
+        <exclude domain="file" path="datastore/unmatched_notifications.preferences_pb" />
+    </device-transfer>
+</data-extraction-rules>
