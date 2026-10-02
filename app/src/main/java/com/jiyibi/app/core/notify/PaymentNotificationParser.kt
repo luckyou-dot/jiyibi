@@ -85,13 +85,21 @@ object PaymentNotificationParser {
         "理财收益", "体验金", "红包已领取", "消费券",
     )
 
-    /**
-     * 泛化标题：这些标题本身不携带任何支付信息（只是消息来源的容器名），
+    /** 泛化标题：这些标题本身不携带任何支付信息（只是消息来源的容器名），
      * 拼进 rawText 只会干扰黑名单判断与商户名提取，因此组装时直接跳过，
-     * 只用正文解析。
-     */
+     * 只用正文解析。 */
     private val GENERIC_TITLES = setOf(
         "服务通知", "微信支付", "支付助手", "微信", "支付宝", "收款助手", "微信收款助手",
+    )
+
+    /**
+     * 否定/未完成词：出现即认定支付未完成，一律不记账。
+     *
+     * "已支付失败"含规则词"已支付"、"退款申请已提交"含收入词"退款"，
+     * 子串匹配的规则表自身无法区分完成态——靠这层在进规则前整体拦截。
+     */
+    private val UNFINISHED_TOKENS = listOf(
+        "失败", "已取消", "处理中", "申请", "待入账", "待支付", "预计", "工作日",
     )
 
     /** 单条匹配规则：命中 [keywords] 任一即适用，收支方向由 [type] 指定 */
@@ -113,7 +121,8 @@ object PaymentNotificationParser {
         Rule(
             name = "微信-转账收款",
             packages = setOf(PaymentPackages.WECHAT),
-            keywords = listOf("已存入零钱", "转账到账", "已收款", "待入账"),
+            // 「待入账」是未完成状态，已被 UNFINISHED_TOKENS 拦截，不进关键词
+            keywords = listOf("已存入零钱", "转账到账", "已收款"),
             type = TransactionType.INCOME,
         ),
         Rule(
@@ -139,7 +148,9 @@ object PaymentNotificationParser {
         Rule(
             name = "通用-退款",
             packages = PaymentPackages.WATCHED,
-            keywords = listOf("退款", "已退还", "退回", "退款成功"),
+            // 只认完成态："您的退款申请已提交"这类过程描述不含以下任何词，
+            // 会被 UNFINISHED_TOKENS（申请/预计/工作日）先行拦截
+            keywords = listOf("退款成功", "已退还", "退款已到账", "已退回"),
             type = TransactionType.INCOME,
         ),
         // ---------- 支出 ----------
@@ -330,6 +341,11 @@ object PaymentNotificationParser {
 
         // 1. 黑名单：命中即不是支付通知
         if (IGNORE_KEYWORDS.any { rawText.contains(it) }) return ParseOutcome.Ignored
+
+        // 1.5 否定/未完成层：支付尚未完成或只是过程描述。
+        // 规则关键词按子串匹配，"已支付失败"含"已支付"、"退款申请已提交"含"退款"，
+        // 都会误命中——先于规则表整体拦截，并归为 Ignored（不进 AI 兜底与未识别队列）
+        if (UNFINISHED_TOKENS.any { rawText.contains(it) }) return ParseOutcome.Ignored
 
         // 2. 有序规则表
         val rule = RULES.firstOrNull { r ->

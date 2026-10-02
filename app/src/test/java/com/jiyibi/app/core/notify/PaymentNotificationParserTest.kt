@@ -440,6 +440,55 @@ class PaymentNotificationParserTest {
         )
     }
 
+    // ---------- 否定/未完成层（支付未完成不记账） ----------
+
+    @Test
+    fun `支付失败不记账`() {
+        // "已支付失败"含规则词"已支付"，曾会误命中——否定层必须先行拦截
+        assertNull(
+            PaymentNotificationParser.parse(
+                PaymentPackages.WECHAT,
+                title = "服务通知",
+                content = "微信支付：已支付失败 ¥35.00，请重试",
+            ),
+        )
+    }
+
+    @Test
+    fun `退款申请过程描述不记为收入`() {
+        // "退款申请已提交"曾命中宽泛的"退款"关键词被记成已到账收入
+        assertNull(
+            PaymentNotificationParser.parse(
+                PaymentPackages.WECHAT,
+                title = "服务通知",
+                content = "您的退款申请已提交，预计1-3个工作日到账 ¥35.00",
+            ),
+        )
+    }
+
+    @Test
+    fun `待入账不算已到账收入`() {
+        // "待入账"是未完成状态，曾直接记为收入导致余额虚高
+        assertNull(
+            PaymentNotificationParser.parse(
+                PaymentPackages.WECHAT,
+                title = "服务通知",
+                content = "对方已转账，金额待入账 ¥50.00",
+            ),
+        )
+    }
+
+    @Test
+    fun `已取消订单不记账`() {
+        assertNull(
+            PaymentNotificationParser.parse(
+                PaymentPackages.ALIPAY,
+                title = "支付助手",
+                content = "订单已取消，付款 ¥99.00 已原路退回",
+            ),
+        )
+    }
+
     // ---------- 应忽略 / 应返回 null ----------
 
     @Test
