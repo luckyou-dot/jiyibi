@@ -46,7 +46,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.jiyibi.app.BuildConfig
+import androidx.compose.ui.platform.LocalContext
+import com.jiyibi.app.core.common.AppVersion
 import com.jiyibi.app.core.designsystem.component.Corner
 import com.jiyibi.app.core.designsystem.component.GlassCard
 import com.jiyibi.app.core.designsystem.component.Spacing
@@ -158,9 +159,12 @@ private fun HeroSection() {
                 fontWeight = FontWeight.Bold,
                 color = Color.White,
             )
-            // 版本号（白色）
+            // 版本号（白色）。运行时读取原因同 SettingsScreen.HeaderItem：
+            // BuildConfig 常量内联 + 增量编译会让未改动文件永远显示旧版本
+            val context = LocalContext.current
+            val versionName = remember(context) { AppVersion.name(context) }
             Text(
-                text = "v${BuildConfig.VERSION_NAME}",
+                text = "v$versionName",
                 style = MaterialTheme.typography.labelMedium,
                 color = Color.White.copy(alpha = 0.85f),
             )

@@ -78,7 +78,8 @@ import com.jiyibi.app.core.designsystem.theme.paletteOf
 import com.jiyibi.app.core.domain.model.Account
 import com.jiyibi.app.core.domain.model.centsToYuan
 import com.jiyibi.app.core.domain.model.yuanToCents
-import com.jiyibi.app.BuildConfig
+import androidx.compose.ui.platform.LocalContext
+import com.jiyibi.app.core.common.AppVersion
 import java.util.Locale
 
 /**
@@ -484,8 +485,12 @@ private fun HeaderItem() {
             color = Color.White,
             fontWeight = FontWeight.Bold,
         )
+        // 版本号运行时读取：BuildConfig 常量会被内联进字节码，增量编译下
+        // 未改动的本文件可能一直带着旧值（曾显示 v1.05 而 manifest 是 1.16）
+        val context = LocalContext.current
+        val versionName = remember(context) { AppVersion.name(context) }
         Text(
-            text = "v${BuildConfig.VERSION_NAME}",
+            text = "v$versionName",
             style = MaterialTheme.typography.labelSmall,
             color = Color.White.copy(alpha = 0.85f),
         )
