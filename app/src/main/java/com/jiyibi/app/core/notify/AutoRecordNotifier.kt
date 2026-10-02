@@ -82,7 +82,7 @@ object AutoRecordNotifier {
         }
         val pendingIntent = PendingIntent.getActivity(
             context,
-            transactionId.hashCode(),
+            notificationId(transactionId),
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
@@ -98,8 +98,12 @@ object AutoRecordNotifier {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .build()
 
-        NotificationManagerCompat.from(context).notify(transactionId.hashCode(), notification)
+        NotificationManagerCompat.from(context).notify(notificationId(transactionId), notification)
     }
+
+    /** 交易 id → 非负通知 id：Long 直接 hashCode 会产出负值且高位截断后易碰撞 */
+    private fun notificationId(transactionId: Long): Int =
+        (transactionId and 0x7FFFFFFFL).toInt()
 
     /** 创建高优先级渠道（minSdk 26，无需版本判断也保留写法习惯） */
     private fun ensureChannel(context: Context) {

@@ -255,8 +255,8 @@ class PaymentRecorder @Inject constructor(
                         it.id == learned.categoryId && it.kind == kind
                     }
                     if (hit != null) return ResolvedCategory(hit.id, hit.name)
-                    // 悬空 id：顺手清理，避免每次都要走一遍这个分支
-                    merchantCategoryRepository.forgetCategory(learned.categoryId)
+                    // 悬空 id：顺手清理。维护动作不能连累记账——抛异常就吞掉
+                    runCatching { merchantCategoryRepository.forgetCategory(learned.categoryId) }
                 }
 
                 MerchantCategoryRepository.LookupResult.ExplicitlyUncategorized -> {
@@ -332,8 +332,11 @@ class PaymentRecorder @Inject constructor(
         /** Logcat 标签：`adb logcat -s JiYiBiNotify` */
         const val TAG = "JiYiBiNotify"
 
-        /** 去重时间窗：同金额同类型在此窗口内视为同一笔支付事件的重复报告 */
-        private const val DUPLICATE_WINDOW_MILLIS = 5_000L
+        /** 去重时间窗：同金额同类型在此窗口内视为同一笔支付事件的重复报告。
+         *  30s 的量级依据：通知链路比无障碍链路慢 1~10s（推送延迟），
+         *  双通道同笔支付都落在这个窗内；而真实连续两笔同额支付（连买两杯）
+         *  中间必然隔着完整的一次收付款交互，>30s，不会被误吞。 */
+        private const val DUPLICATE_WINDOW_MILLIS = 30_000L
 
         /**
          * 事件指纹有效期。通知 key 在应用重启、系统重建通知后可能被复用给别的通知，

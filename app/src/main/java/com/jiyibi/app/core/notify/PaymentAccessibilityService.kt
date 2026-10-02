@@ -9,6 +9,12 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 /**
  * 支付页面识别服务（无障碍）。
@@ -89,6 +95,19 @@ class PaymentAccessibilityService : AccessibilityService() {
     /** 主线程 Handler：窗口切换事件到达时 rootInActiveWindow 可能还是旧窗口，延迟读屏等它换血 */
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    /**
+     * 读屏处理作用域：`limitedParallelism(1)` 单线程串行化。
+     *
+     * `onAccessibilityEvent` 是主线程回调，而 BFS 遍历 300 个无障碍节点全是
+     * 跨进程 Binder 调用（每个 0.x ms，慢机上合计几十毫秒）+ 多条正则解析——
+     * 压在主线程上遇到长列表页的事件风暴就是 ANR。状态字段（指纹/节流）也
+     * 只在这个单线程作用域里读写，天然免锁且保持事件顺序。
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val screenScope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Default.limitedParallelism(1),
+    )
+
     /** 待执行的延迟读屏任务，服务销毁时清理 */
     private var pendingRead: Runnable? = null
 
@@ -111,6 +130,12 @@ class PaymentAccessibilityService : AccessibilityService() {
     override fun onUnbind(intent: Intent?): Boolean {
         pendingRead?.let(mainHandler::removeCallbacks)
         return super.onUnbind(intent)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        pendingRead?.let(mainHandler::removeCallbacks)
+        screenScope.cancel()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -180,41 +205,52 @@ class PaymentAccessibilityService : AccessibilityService() {
         }.also { mainHandler.postDelayed(it, READ_DELAY_MILLIS) }
     }
 
-    /** 读取当前屏幕文字并尝试解析记账 */
+    /**
+     * 读取当前屏幕文字并尝试解析记账。
+     *
+     * 调用线程（主线程）只取 [rootInActiveWindow]——节点树要贴近事件时刻取才新鲜；
+     * BFS 遍历（全是跨进程 Binder 调用）、指纹节流、正则解析全部丢到 [screenScope]
+     * 单线程后台，主线程零重活，长列表页的事件风暴不再压主线程。
+     */
     private fun handleScreen(packageName: String, now: Long) {
         val root = rootInActiveWindow ?: return
-        val text = collectTexts(root)
-        if (text.isBlank()) return
+        screenScope.launch {
+            val text = collectTexts(root)
+            if (text.isBlank()) return@launch
 
-        // 同一段文本在节流窗内只处理一次（内容变化事件会反复触发）
-        val signature = "$packageName:$text"
-        if (signature == lastSignature && now - lastSignatureAt < THROTTLE_MILLIS) return
-        lastSignature = signature
-        lastSignatureAt = now
+            // 同一段文本在节流窗内只处理一次（内容变化事件会反复触发）
+            val signature = "$packageName:$text"
+            if (signature == lastSignature && now - lastSignatureAt < THROTTLE_MILLIS) return@launch
+            lastSignature = signature
+            lastSignatureAt = now
 
-        // 标准规则先行；未命中再试极简成功页兜底——本方法只在支付放行窗口内被调用，
-        // 上下文已确认用户处于支付流程，可接受"无方向词"的成功页形态
-        val parsed = PaymentNotificationParser.parse(
-            packageName = packageName,
-            title = "",
-            content = text,
-        ) ?: PaymentNotificationParser.parseMinimalSuccess(packageName, text)
-        ?: run {
-            // 支付窗口内未命中规则：打日志供调规则（adb logcat -s JiYiBiNotify）
-            Log.d(PaymentRecorder.TAG, "屏幕未命中 [$packageName] ${text.take(80)}")
-            return
+            // 标准规则先行；未命中再试极简成功页兜底——本方法只在支付放行窗口内被调用，
+            // 上下文已确认用户处于支付流程，可接受"无方向词"的成功页形态
+            val parsed = PaymentNotificationParser.parse(
+                packageName = packageName,
+                title = "",
+                content = text,
+            ) ?: PaymentNotificationParser.parseMinimalSuccess(packageName, text)
+            ?: run {
+                // 支付窗口内未命中规则：打日志供调规则（adb logcat -s JiYiBiNotify）
+                Log.d(PaymentRecorder.TAG, "屏幕未命中 [$packageName] ${text.take(80)}")
+                return@launch
+            }
+
+            Log.i(
+                PaymentRecorder.TAG,
+                "支付页面识别命中 [${parsed.matchedRule}] ${parsed.rawText.take(60)}",
+            )
+            recorder.recordAsync(
+                source = "无障碍",
+                packageName = packageName,
+                occurredAt = now,
+                parsed = parsed,
+                // 页面文本指纹：同一次支付的屏幕被重复处理时（事件风暴、系统重投）
+                // 指纹层直接命中跳过，不再单纯依赖金额时间窗兜底
+                eventId = "a11y:$signature",
+            )
         }
-
-        Log.i(
-            PaymentRecorder.TAG,
-            "支付页面识别命中 [${parsed.matchedRule}] ${parsed.rawText.take(60)}",
-        )
-        recorder.recordAsync(
-            source = "无障碍",
-            packageName = packageName,
-            occurredAt = now,
-            parsed = parsed,
-        )
     }
 
     /** 广度优先收集屏幕上的可见文本，限制节点数防止超大页面拖垮主线程 */

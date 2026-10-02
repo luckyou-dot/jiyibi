@@ -56,11 +56,21 @@ class PaymentNotificationListener : NotificationListenerService() {
      *
      * `onNotificationPosted` 是系统回调，不能在里面直接做 IO，
      * 因此自己起一个跟随服务生命周期的协程作用域。
+     *
+     * **var 的原因**：onDestroy 里 cancel 后系统可能立即重绑并回调
+     * onListenerConnected，此时必须换新 scope——在已取消的 scope 上
+     * launch 会静默丢弃事件。
      */
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var scope = newScope()
+
+    private fun newScope(): CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** AI 兜底节流：上次发起请求的时刻。一波未识别通知只放行约每 10 秒一次 */
+    private val lastAiAttemptAt = java.util.concurrent.atomic.AtomicLong(0L)
 
     override fun onListenerConnected() {
         super.onListenerConnected()
+        scope = newScope()
         Log.i(PaymentRecorder.TAG, "通知监听已连接，支付通知自动记账生效")
     }
 
@@ -80,6 +90,11 @@ class PaymentNotificationListener : NotificationListenerService() {
         if (packageName !in PaymentPackages.WATCHED) return
 
         val read = readText(notification)
+        // 复合事件指纹：sbn.key 里含 postTime，通知内容更新会换 key，
+        // 指纹层拦不住"同一条通知的更新投递"；拼上内容哈希后——
+        // 同一条通知重投（key、内容都不变）必命中，新通知（postTime 变）必不同
+        val eventId = "${sbn.key}:${read.content.hashCode()}"
+
         when (val outcome = PaymentNotificationParser.parseDetailed(packageName, read.title, read.content)) {
             is PaymentNotificationParser.ParseOutcome.Matched -> {
                 recorder.recordAsync(
@@ -87,7 +102,7 @@ class PaymentNotificationListener : NotificationListenerService() {
                     packageName = packageName,
                     occurredAt = if (sbn.postTime > 0L) sbn.postTime else System.currentTimeMillis(),
                     parsed = outcome.payment,
-                    eventId = sbn.key,
+                    eventId = eventId,
                 )
             }
 
@@ -108,7 +123,16 @@ class PaymentNotificationListener : NotificationListenerService() {
                 )
                 val occurredAt = if (sbn.postTime > 0L) sbn.postTime else System.currentTimeMillis()
                 scope.launch {
-                    val aiParsed = if (aiParser.isConfigured()) {
+                    // AI 节流：连续一波未识别通知（营销群发等）只放行约每 10 秒一次，
+                    // 超出的直接进未识别队列——费额度也费电，且 AI 对营销文案本来也无能为力
+                    val askAi = System.currentTimeMillis() - lastAiAttemptAt.get() >= AI_THROTTLE_MILLIS &&
+                        aiParser.isConfigured() &&
+                        lastAiAttemptAt.compareAndSet(
+                            // isConfigured 通过后才占坑，未配置时不吞掉节流窗口
+                            lastAiAttemptAt.get(),
+                            System.currentTimeMillis(),
+                        )
+                    val aiParsed = if (askAi) {
                         runCatching {
                             aiParser.parsePaymentNotification(packageName, read.title, read.content)
                         }.getOrNull()
@@ -123,7 +147,7 @@ class PaymentNotificationListener : NotificationListenerService() {
                             occurredAt = occurredAt,
                             parsed = aiParsed,
                             // 通知 key：同一条通知被系统重投 / 更新时 key 不变，供落库器精确判重
-                            eventId = sbn.key,
+                            eventId = eventId,
                         )
                     } else {
                         unmatchedNotificationRepository.add(
@@ -149,6 +173,11 @@ class PaymentNotificationListener : NotificationListenerService() {
     override fun onDestroy() {
         super.onDestroy()
         scope.cancel()
+    }
+
+    companion object {
+        /** AI 兜底请求的最小间隔 */
+        private const val AI_THROTTLE_MILLIS = 10_000L
     }
 
     // ------------------------------------------------------------------
