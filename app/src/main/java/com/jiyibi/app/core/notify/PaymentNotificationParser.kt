@@ -467,6 +467,65 @@ object PaymentNotificationParser {
         .joinToString(" ")
         .trim()
 
+    /**
+     * 生成写入交易备注的文本：**商户名优先，其次只截取"这一笔支付"那一小段**。
+     *
+     * 这条规则是「备注里塞进整屏聊天消息」的根治点。无障碍读屏拿到的是整块窗口
+     * （用户可能正停在聊天列表、群聊、商品详情页上），若直接把 [ParsedPayment.rawText]
+     * 截断写进备注，用户看到的备注就是一堆与自己无关的窗口文字。因此：
+     *
+     * 1. 有商户名 → 直接用商户名（最干净，也是学习表的 key）；
+     * 2. 没有商户名 → 在清洗后的文本里**以支付语义词为锚点**取前后各一个词
+     *    （如「微信支付: 已支付¥2.00」），而不是取开头 N 个字符；
+     * 3. 锚点也找不到（如极简成功页只有金额与收款人）→ 退回清洗后的整段，
+     *    但这类文本本身就极短。
+     *
+     * 最终一律截到 [NOTE_MAX_CHARS] 字以内。
+     */
+    fun noteFor(parsed: ParsedPayment): String {
+        val merchant = sanitizeForNote(parsed.merchant)
+        if (merchant.isNotBlank()) return merchant.take(NOTE_MAX_CHARS)
+        val cleaned = sanitizeForNote(parsed.rawText)
+        if (cleaned.isBlank()) return ""
+        return bestNoteSegment(cleaned).take(NOTE_MAX_CHARS).trim()
+    }
+
+    /**
+     * 在长文本里截出与「这一笔支付」最相关的一小段：以第一个支付语义词为锚点，
+     * 取前 [NOTE_CONTEXT_BEFORE] 个词与后 [NOTE_CONTEXT_AFTER] 个词。
+     *
+     * 找不到锚点词时原样返回（调用方会再截长度）。
+     */
+    private fun bestNoteSegment(text: String): String {
+        val tokens = text.split(' ').filter { it.isNotBlank() }
+        val anchor = tokens.indexOfFirst { token -> NOTE_ANCHOR_KEYWORDS.any(token::contains) }
+        if (anchor < 0) return text
+        // 金额常与锚点词同在一个词里（"已支付¥2.00"）：此时不再向后多取一个词，
+        // 否则紧跟其后的聊天内容（"好的"）会被带进备注
+        val after = if (tokens[anchor].any(Char::isDigit)) 0 else NOTE_CONTEXT_AFTER
+        val from = (anchor - NOTE_CONTEXT_BEFORE).coerceAtLeast(0)
+        val to = (anchor + after).coerceAtMost(tokens.lastIndex)
+        return tokens.subList(from, to + 1).joinToString(" ")
+    }
+
+    /** 备注最大长度：只够描述一笔支付，装不下整屏文本 */
+    private const val NOTE_MAX_CHARS = 40
+
+    /** 锚点前后各取几个词 */
+    private const val NOTE_CONTEXT_BEFORE = 1
+    private const val NOTE_CONTEXT_AFTER = 1
+
+    /**
+     * 备注锚点词：与 [RULES] 的方向词保持同一套语义（支付/收款/转账/退款），
+     * 用于在整屏文本中定位「这一笔」。
+     */
+    private val NOTE_ANCHOR_KEYWORDS = listOf(
+        "已支付", "支付成功", "付款成功", "已付款", "支付完成", "已成功付款", "成功付款",
+        "交易成功", "已扣款", "扣款成功", "自动扣款", "已转账给", "转账成功",
+        "收款到账", "收款成功", "成功收款", "已收款", "已存入零钱",
+        "退款成功", "已退还", "退款已到账", "已退回",
+    )
+
     /** 调试期开 USB 时系统横幅会混进读屏文本，整段剔除 */
     private val USB_DEBUG_NOTICE = Regex("已连接到\\s*USB\\s*调试")
 

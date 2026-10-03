@@ -3,10 +3,12 @@ package com.jiyibi.app.core.notify
 import android.content.Context
 import android.util.Log
 import com.jiyibi.app.core.ai.AiPaymentParser
+import com.jiyibi.app.core.ai.AiReview
 import com.jiyibi.app.core.data.repository.AccountPreferencesRepository
 import com.jiyibi.app.core.domain.model.Account
 import com.jiyibi.app.core.data.repository.AutoRecordPreferencesRepository
 import com.jiyibi.app.core.data.repository.MerchantCategoryRepository
+import com.jiyibi.app.core.data.repository.UnmatchedNotificationRepository
 import com.jiyibi.app.core.domain.model.CategoryKind
 import com.jiyibi.app.core.domain.model.Transaction
 import com.jiyibi.app.core.domain.model.TransactionType
@@ -29,8 +31,12 @@ import kotlinx.coroutines.sync.withLock
  * 支付事件统一落库器。
  *
  * 「通知监听」与「无障碍支付页面识别」两条来源最终都要走同一段流程：
- * 开关检查 → 去重 → 选账户 → 猜分类 → 写交易 → 同步余额 → 入复核队列 → 弹横幅提醒。
+ * 开关检查 → 去重 → 选账户 → **AI 内容审核** → 猜分类 → 写交易 → 同步余额
+ * → 入复核队列 → 弹横幅提醒。
  * 收敛在这里，保证两条路径的记账行为（余额、提醒、复核）完全一致。
+ *
+ * AI 审核（[reviewIfNeeded]）只对「本地拿不准」的抓取发起，并且**失败即放行**；
+ * 审核否决的原文进未识别队列，不会静默消失。
  */
 @Singleton
 class PaymentRecorder @Inject constructor(
@@ -41,6 +47,7 @@ class PaymentRecorder @Inject constructor(
     private val accountPreferences: AccountPreferencesRepository,
     private val autoRecordPreferences: AutoRecordPreferencesRepository,
     private val merchantCategoryRepository: MerchantCategoryRepository,
+    private val unmatchedNotificationRepository: UnmatchedNotificationRepository,
     private val aiParser: AiPaymentParser,
 ) {
 
@@ -134,8 +141,35 @@ class PaymentRecorder @Inject constructor(
             }
         }
 
-        // 阶段二：分类猜测（可能含 AI 网络调用），锁外执行
-        val category = resolveCategory(parsed)
+        // 阶段二：AI 内容审核 + 分类猜测（两者都可能走网络），锁外执行
+        val aiReview = reviewIfNeeded(source, packageName, parsed)
+        if (aiReview?.isPayment == false) {
+            // 审核否决：不入库，但**绝不静默丢弃**——原文进未识别队列，
+            // 在「自动记账」页可见，用户能判断是不是漏了一笔真账
+            runCatching {
+                unmatchedNotificationRepository.add(
+                    packageName = packageName,
+                    title = "AI 审核未通过（$source）",
+                    content = parsed.rawText,
+                    postedAt = occurredAt,
+                )
+            }
+            Log.i(
+                TAG,
+                "AI 审核未通过，未记账（$source/${parsed.matchedRule}）：${parsed.rawText.take(60)}",
+            )
+            return
+        }
+
+        // 审核通过时用模型提取的商户名覆盖本地结果：分类关键词表与「商户→分类」学习表
+        // 都以商户名为输入，模型抠出来的名字比整段读屏文本有用得多
+        val effective = if (aiReview != null && aiReview.merchant.isNotBlank()) {
+            parsed.copy(merchant = aiReview.merchant)
+        } else {
+            parsed
+        }
+
+        val category = resolveCategory(effective)
 
         recordMutex.withLock {
             // 复查：分类期间另一通道可能已把同一笔记录上
@@ -151,11 +185,9 @@ class PaymentRecorder @Inject constructor(
                 accountId = account.id,
                 toAccountId = null,
                 categoryId = category.id,
-                // 有商户名就用商户名；否则用清洗后的文案——读屏文本混有状态栏时间、
-                // 系统通知等噪声，先剔除再入备注，避免"乱七八糟"
-                note = parsed.merchant.ifBlank {
-                    PaymentNotificationParser.sanitizeForNote(parsed.rawText)
-                }.take(NOTE_MAX_LENGTH),
+                // 备注优先级：AI 审核结论 > 商户名 > 本地按支付锚点截出的那一小段。
+                // 绝不再把整屏读屏文本塞进备注（见 PaymentNotificationParser.noteFor）
+                note = noteOf(effective, aiReview).take(NOTE_MAX_LENGTH),
                 tags = emptyList(),
                 date = occurredAt,
             )
@@ -236,7 +268,9 @@ class PaymentRecorder @Inject constructor(
      *         仅用于提醒通知展示
      */
     private suspend fun resolveCategory(parsed: ParsedPayment): ResolvedCategory {
-        val merchant = parsed.merchant.ifBlank { parsed.rawText }
+        // 商户名优先；没有商户名时用**按支付锚点截出的片段**而不是整屏原文——
+        // 整屏文本里随便一句"美团""打车"都会把分类带偏（用户当时可能正停在聊天或商品页）
+        val merchant = parsed.merchant.ifBlank { PaymentNotificationParser.noteFor(parsed) }
         val kind = if (parsed.type == TransactionType.INCOME) {
             CategoryKind.INCOME
         } else {
@@ -302,6 +336,59 @@ class PaymentRecorder @Inject constructor(
     private data class ResolvedCategory(val id: Long?, val displayName: String?)
 
     /**
+     * 是否需要 AI 审核，以及审核结论。
+     *
+     * ## 为什么不是每条都送审
+     * 结构化支付通知（文案短、商户名能抠出来）本地就已经很确定，多送一次网络往返
+     * 只会拖慢落库与横幅提醒。真正需要审核的是**本地拿不准**的两类：
+     * 1. 商户名没提取出来（[ParsedPayment.merchant] 为空）——备注只能退回读屏文本；
+     * 2. 原始文本较长（超过 [REVIEW_TEXT_THRESHOLD]）——基本可确定是**整屏读屏**，
+     *    本地规则只知道"这屏里出现了支付语义词"，不知道这一屏是不是聊天列表。
+     *
+     * 未配置 AI、网络失败、输出不合法时返回 null，调用方按原样继续记账（失败即放行）。
+     */
+    private suspend fun reviewIfNeeded(
+        source: String,
+        packageName: String,
+        parsed: ParsedPayment,
+    ): AiReview? {
+        val needsReview = parsed.merchant.isBlank() || parsed.rawText.length > REVIEW_TEXT_THRESHOLD
+        if (!needsReview) return null
+
+        val review = runCatching {
+            aiParser.review(
+                source = source,
+                packageName = packageName,
+                text = parsed.rawText,
+                amountCents = parsed.amountCents,
+                type = parsed.type,
+            )
+        }.getOrNull() ?: run {
+            Log.d(TAG, "AI 审核未生效（未配置或调用失败），按本地结果记账（$source）")
+            return null
+        }
+
+        Log.i(
+            TAG,
+            "AI 审核结果（$source）：payment=${review.isPayment} " +
+                "merchant=「${review.merchant}」 note=「${review.note}」",
+        )
+        return review
+    }
+
+    /**
+     * 备注取值优先级：AI 审核给出的短备注 > 商户名 > 本地按支付锚点截出的片段。
+     *
+     * 三段都不会把整屏读屏文本写进备注：AI 备注由提示词限定 12 字以内，
+     * 商户名本身就是短词，本地片段只取锚点词前后各一个词
+     * （见 [PaymentNotificationParser.noteFor]）。
+     */
+    private fun noteOf(parsed: ParsedPayment, review: AiReview?): String {
+        review?.note?.takeIf { it.isNotBlank() }?.let { return it }
+        return PaymentNotificationParser.noteFor(parsed)
+    }
+
+    /**
      * 登记并判断事件指纹是否首次出现。
      *
      * @return true = 首次出现，可继续落库；false = TTL 内已处理过，应丢弃。
@@ -347,5 +434,13 @@ class PaymentRecorder @Inject constructor(
 
         /** 备注最大长度，避免把整段营销文案写进备注 */
         private const val NOTE_MAX_LENGTH = 60
+
+        /**
+         * 触发 AI 审核的文本长度阈值。
+         *
+         * 结构化支付通知（"微信支付: 已支付¥35.00"）连标题带正文也在 30 字以内；
+         * 超过这个长度基本可以判定是**整屏读屏**，值得让模型复核一遍。
+         */
+        private const val REVIEW_TEXT_THRESHOLD = 30
     }
 }

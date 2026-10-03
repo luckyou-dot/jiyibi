@@ -443,7 +443,9 @@ private fun SectionHeader(title: String) {
 /**
  * AI 智能识别配置卡（可选增强）。
  *
- * 规则永远优先，AI 只做两件兜底：规则解析不了的通知识别、关键词猜不到的分类。
+ * 规则永远优先，AI 只做三件兜底：① 规则解析不了的通知识别；② 关键词猜不到的分类；
+ * ③ **读屏内容审核**——无障碍读到的是整屏文字，由模型复核"这一屏是不是一笔真实支付"
+ * 并给出干净备注（防止把整屏聊天内容写进备注）。
  * 未配置 / 关闭时行为与纯本地完全一致。API Key 只存本机 DataStore。
  */
 @Composable
@@ -491,7 +493,7 @@ private fun AiCard(config: AiConfig, onSave: (AiConfig) -> Unit) {
                     fontWeight = FontWeight.Medium,
                 )
                 Text(
-                    if (config.isConfigured) "已启用：规则啃不动的文案交给大模型兜底"
+                    if (config.isConfigured) "已启用：兜底解析 + 分类猜测 + 读屏内容审核"
                     else if (enabled) "开关已开，还需在下方填入 API Key 才会生效"
                     else "未启用：保持纯本地识别",
                     style = MaterialTheme.typography.labelSmall,
@@ -503,7 +505,8 @@ private fun AiCard(config: AiConfig, onSave: (AiConfig) -> Unit) {
 
         Spacer(Modifier.height(Spacing.s))
         Text(
-            "内置规则命中时不会联网；只有规则识别不了的通知、关键词猜不到的分类才调用大模型。" +
+            "内置规则命中时不会联网；只有规则识别不了的通知、关键词猜不到的分类，" +
+                "以及读屏抓到的整屏文字（复核是否真是一笔支付、并生成干净备注）才调用大模型。" +
                 "已预填 Agnes AI 的接口地址与模型名（当前免费），在下方填入你的 API Key 并打开开关即可用；" +
                 "也可改成任意 OpenAI 兼容接口（智谱、DeepSeek 等）。API Key 只保存在本机，不进版本库。",
             style = MaterialTheme.typography.bodySmall,
