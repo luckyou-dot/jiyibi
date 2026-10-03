@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * 支付事件统一落库器。
@@ -356,15 +357,19 @@ class PaymentRecorder @Inject constructor(
         if (!needsReview) return null
 
         val review = runCatching {
-            aiParser.review(
-                source = source,
-                packageName = packageName,
-                text = parsed.rawText,
-                amountCents = parsed.amountCents,
-                type = parsed.type,
-            )
+            // 审核有超时上限：落库与横幅提醒都排在它后面，不能让一次慢网络把「自动记账没反应」
+            // 拖到十几秒。超时与失败同义——按本地结果记账（失败即放行）
+            withTimeoutOrNull(REVIEW_TIMEOUT_MILLIS) {
+                aiParser.review(
+                    source = source,
+                    packageName = packageName,
+                    text = parsed.rawText,
+                    amountCents = parsed.amountCents,
+                    type = parsed.type,
+                )
+            }
         }.getOrNull() ?: run {
-            Log.d(TAG, "AI 审核未生效（未配置或调用失败），按本地结果记账（$source）")
+            Log.d(TAG, "AI 审核未生效（未配置 / 超时 / 调用失败），按本地结果记账（$source）")
             return null
         }
 
@@ -442,5 +447,14 @@ class PaymentRecorder @Inject constructor(
          * 超过这个长度基本可以判定是**整屏读屏**，值得让模型复核一遍。
          */
         private const val REVIEW_TEXT_THRESHOLD = 30
+
+        /**
+         * AI 审核的最长等待时间。
+         *
+         * OkHttp 自身的读超时是 20s，但落库与横幅提醒都排在审核之后：
+         * 让用户等十几秒才看到"记好了"，观感上等同于"自动记账坏了"。
+         * 超过这个上限就放弃审核、按本地结果记账（备注仍有本地锚点截取兜底）。
+         */
+        private const val REVIEW_TIMEOUT_MILLIS = 8_000L
     }
 }
