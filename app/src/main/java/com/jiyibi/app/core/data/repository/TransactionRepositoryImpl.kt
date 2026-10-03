@@ -2,11 +2,13 @@ package com.jiyibi.app.core.data.repository
 
 import com.jiyibi.app.core.data.toDomain
 import com.jiyibi.app.core.data.toEntity
+import com.jiyibi.app.core.database.dao.AccountDao
 import com.jiyibi.app.core.database.dao.CategoryDao
 import com.jiyibi.app.core.database.dao.TransactionDao
 import com.jiyibi.app.core.domain.model.CategoryStat
 import com.jiyibi.app.core.domain.model.TrendPoint
 import com.jiyibi.app.core.domain.model.Transaction
+import com.jiyibi.app.core.domain.model.reversedBalanceDeltas
 import com.jiyibi.app.core.domain.repository.TransactionRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
@@ -18,6 +20,7 @@ import javax.inject.Singleton
 class TransactionRepositoryImpl @Inject constructor(
     private val dao: TransactionDao,
     private val categoryDao: CategoryDao,
+    private val accountDao: AccountDao,
 ) : TransactionRepository {
 
     override fun observeRecent(limit: Int): Flow<List<Transaction>> =
@@ -41,7 +44,23 @@ class TransactionRepositoryImpl @Inject constructor(
         return dao.upsert(transaction.toEntity(createdAt = now, updatedAt = now))
     }
 
-    override suspend fun delete(id: Long) = dao.deleteById(id)
+    /**
+     * 删除交易并回滚余额。
+     *
+     * 顺序：读原交易（回滚要知道类型/金额/账户）→ 逐个账户 `adjustBalance` → 删行。
+     * 三步都是单条 SQL，未包事务：进程在最坏时机被杀会留下「余额已回滚、行还在」，
+     * 用户再删一次即自愈（重试读到的仍是原交易，只回滚一次）。真要严格一致，
+     * 需用 Room 的 `@Transaction` 把这段包起来。
+     *
+     * 交易读不到时（id 已失效、重复点击）什么都不做：宁可少回滚一次，也不要抛异常卡住删除。
+     */
+    override suspend fun deleteAndRevertBalance(id: Long) {
+        val existing = dao.getById(id)?.toDomain() ?: return
+        existing.reversedBalanceDeltas().forEach { delta ->
+            accountDao.adjustBalance(delta.accountId, delta.delta)
+        }
+        dao.deleteById(id)
+    }
 
     override suspend fun deleteAll() = dao.deleteAll()
 

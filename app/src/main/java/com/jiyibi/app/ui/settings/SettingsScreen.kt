@@ -31,7 +31,6 @@ import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Payment
 import androidx.compose.material.icons.filled.Repeat
-import androidx.compose.material.icons.filled.Savings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
@@ -80,7 +79,6 @@ import com.jiyibi.app.core.domain.model.centsToYuan
 import com.jiyibi.app.core.domain.model.yuanToCents
 import androidx.compose.ui.platform.LocalContext
 import com.jiyibi.app.core.common.AppVersion
-import java.util.Locale
 
 /**
  * 「我的」聚合页：聚合各业务入口（分类 / 账户 / 周期 / 借贷 / 标签 / 备份 / 迁移），

@@ -7,7 +7,7 @@ import androidx.work.WorkerParameters
 import com.jiyibi.app.core.domain.model.RecurringFrequency
 import com.jiyibi.app.core.domain.model.RecurringRule
 import com.jiyibi.app.core.domain.model.Transaction
-import com.jiyibi.app.core.domain.model.TransactionType
+import com.jiyibi.app.core.domain.model.balanceDeltas
 import com.jiyibi.app.core.domain.repository.AccountRepository
 import com.jiyibi.app.core.domain.repository.RecurringRepository
 import com.jiyibi.app.core.domain.repository.TransactionRepository
@@ -75,11 +75,9 @@ class RecurringWorker @AssistedInject constructor(
             recurringRuleId = rule.id,
         )
         transactionRepository.upsert(tx)
-        // 同步账户余额（支出扣减、收入增加）
-        when (rule.type) {
-            TransactionType.EXPENSE -> accountRepository.adjustBalance(rule.accountId, -rule.amount)
-            TransactionType.INCOME -> accountRepository.adjustBalance(rule.accountId, rule.amount)
-            TransactionType.TRANSFER -> Unit // 周期记账不支持转账
+        // 同步账户余额：增减规则统一由 Transaction.balanceDeltas 定义，避免各处再写一份 when(type)
+        tx.balanceDeltas().forEach { delta ->
+            accountRepository.adjustBalance(delta.accountId, delta.delta)
         }
     }
 

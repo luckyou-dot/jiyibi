@@ -78,13 +78,6 @@ interface TransactionDao {
         maxAmount: Long?,
     ): Flow<List<TransactionEntity>>
 
-    /** 某分类在某时间段的支出合计。 */
-    @Query(
-        "SELECT COALESCE(SUM(amount), 0) FROM transactions " +
-            "WHERE type = 'EXPENSE' AND categoryId = :categoryId AND date BETWEEN :start AND :end"
-    )
-    fun observeCategoryExpense(categoryId: Long, start: Long, end: Long): Flow<Long>
-
     /** 某时间段总支出，用于首页与预算进度。 */
     @Query(
         "SELECT COALESCE(SUM(amount), 0) FROM transactions " +

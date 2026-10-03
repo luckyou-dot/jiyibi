@@ -79,11 +79,6 @@ class AutoRecordPreferencesRepository @Inject constructor(
         }
     }
 
-    /** 清空复核队列（不影响已写入的交易记录） */
-    suspend fun clearRecent() {
-        context.autoRecordDataStore.edit { prefs -> prefs.remove(KEY_RECENT_IDS) }
-    }
-
     /** 解析逗号分隔的 id 字符串，容忍空值、空白与脏数据 */
     private fun decodeIds(raw: String?): List<Long> =
         raw?.split(',')

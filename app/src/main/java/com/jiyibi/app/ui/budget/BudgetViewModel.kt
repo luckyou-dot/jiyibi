@@ -84,7 +84,4 @@ class BudgetViewModel @Inject constructor(
         started = SharingStarted.WhileSubscribed(5_000),
         initialValue = BudgetUiState(),
     )
-
-    /** 刷新入口（StateFlow 自动随上游变化更新，此处保留供外部调用约定）。 */
-    fun refresh() = Unit
 }

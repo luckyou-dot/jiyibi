@@ -161,8 +161,9 @@ class SearchViewModel @Inject constructor(
         _filters.value = SearchFilters()
     }
 
+    /** 删除一笔交易（同时回滚该交易对账户余额的影响） */
     fun deleteTransaction(id: Long) {
-        viewModelScope.launch { transactionRepository.delete(id) }
+        viewModelScope.launch { transactionRepository.deleteAndRevertBalance(id) }
     }
 }
 

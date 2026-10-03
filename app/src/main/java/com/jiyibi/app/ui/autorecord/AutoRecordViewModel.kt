@@ -10,7 +10,6 @@ import com.jiyibi.app.core.data.repository.UnmatchedNotification
 import com.jiyibi.app.core.data.repository.UnmatchedNotificationRepository
 import com.jiyibi.app.core.domain.model.Category
 import com.jiyibi.app.core.domain.model.Transaction
-import com.jiyibi.app.core.domain.model.TransactionType
 import com.jiyibi.app.core.domain.repository.AccountRepository
 import com.jiyibi.app.core.domain.repository.CategoryRepository
 import com.jiyibi.app.core.domain.repository.TransactionRepository
@@ -136,31 +135,14 @@ class AutoRecordViewModel @Inject constructor(
     /**
      * 删除一条自动记录。
      *
-     * **必须同时撤销账户余额影响**：自动记账落库时调过 `adjustBalance`，
-     * 这里若只删交易不回滚余额，账户余额就会与流水脱节。
-     * 与手动删除的逻辑一致，见 `TransactionEditViewModel.reverseAccountEffect`。
+     * 余额回滚交给 [TransactionRepository.deleteAndRevertBalance]：自动记账落库时调过
+     * `adjustBalance`，若只删交易不回滚余额，账户余额就会与流水脱节。回滚规则只此一处，
+     * 不再在 ViewModel 里各写一份 `when (type)`。
      */
     fun delete(item: AutoRecordItem) {
         viewModelScope.launch {
-            when (item.tx.type) {
-                TransactionType.EXPENSE -> accountRepository.adjustBalance(item.tx.accountId, item.tx.amount)
-                TransactionType.INCOME -> accountRepository.adjustBalance(item.tx.accountId, -item.tx.amount)
-
-                // 转账动了两个账户，只回滚出账方会让入账方余额永久虚高
-                TransactionType.TRANSFER -> {
-                    accountRepository.adjustBalance(item.tx.accountId, item.tx.amount)
-                    item.tx.toAccountId?.let { toId ->
-                        accountRepository.adjustBalance(toId, -item.tx.amount)
-                    }
-                }
-            }
-            transactionRepository.delete(item.tx.id)
+            transactionRepository.deleteAndRevertBalance(item.tx.id)
             autoRecordPreferences.removeRecentId(item.tx.id)
         }
-    }
-
-    /** 清空复核队列（不删除已写入的交易） */
-    fun clearQueue() {
-        viewModelScope.launch { autoRecordPreferences.clearRecent() }
     }
 }

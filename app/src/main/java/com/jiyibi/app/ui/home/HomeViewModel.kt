@@ -330,15 +330,12 @@ class HomeViewModel @Inject constructor(
         initialValue = HomeUiState(isLoading = true),
     )
 
-    /** 删除一笔交易 */
+    /** 删除一笔交易（同时回滚该交易对账户余额的影响） */
     fun delete(id: Long) {
         viewModelScope.launch {
-            transactionRepository.delete(id)
+            transactionRepository.deleteAndRevertBalance(id)
         }
     }
-
-    /** 刷新（StateFlow 自动响应上游；保留供调用约定） */
-    fun refresh() = Unit
 
     /** 设置日期范围 [start, end) */
     fun setDateRange(range: Pair<Long, Long>) {

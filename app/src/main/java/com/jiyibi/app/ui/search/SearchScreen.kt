@@ -57,8 +57,6 @@ import com.jiyibi.app.core.designsystem.component.TransactionDayCard
 import com.jiyibi.app.core.designsystem.component.TransactionDayHeader
 import com.jiyibi.app.core.designsystem.component.UnifiedCard
 import com.jiyibi.app.core.designsystem.component.UnifiedCardVariant
-import com.jiyibi.app.core.domain.model.Category
-import com.jiyibi.app.core.domain.model.Transaction
 import com.jiyibi.app.core.domain.model.TransactionType
 import java.text.SimpleDateFormat
 import java.util.Date

@@ -20,7 +20,6 @@ import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.ChildCare
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DirectionsCar
-import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Fastfood
 import androidx.compose.material.icons.filled.Flight
 import androidx.compose.material.icons.filled.HealthAndSafety
@@ -208,43 +207,6 @@ fun LoadingState(modifier: Modifier = Modifier) {
         contentAlignment = Alignment.Center,
     ) {
         CircularProgressIndicator()
-    }
-}
-
-/**
- * 错误状态：居中错误图标 + 消息 + 可选「重试」按钮。
- */
-@Composable
-fun ErrorState(
-    message: String,
-    onRetry: (() -> Unit)? = null,
-) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Icon(
-                imageVector = Icons.Filled.ErrorOutline,
-                contentDescription = null,
-                modifier = Modifier.size(64.dp),
-                tint = MaterialTheme.colorScheme.error,
-            )
-            Text(
-                text = message,
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-            )
-            if (onRetry != null) {
-                Button(onClick = onRetry) { Text("重试") }
-            }
-        }
     }
 }
 

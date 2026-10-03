@@ -9,15 +9,14 @@ import com.jiyibi.app.core.data.repository.MerchantCategoryRepository
 import com.jiyibi.app.core.domain.model.Account
 import com.jiyibi.app.core.domain.model.Category
 import com.jiyibi.app.core.domain.model.CategoryKind
-import com.jiyibi.app.core.domain.model.Debt
-import com.jiyibi.app.core.domain.model.DebtDirection
 import com.jiyibi.app.core.domain.model.RecurringFrequency
 import com.jiyibi.app.core.domain.model.RecurringRule
 import com.jiyibi.app.core.domain.model.Transaction
 import com.jiyibi.app.core.domain.model.TransactionType
+import com.jiyibi.app.core.domain.model.balanceDeltas
+import com.jiyibi.app.core.domain.model.reversedBalanceDeltas
 import com.jiyibi.app.core.domain.repository.AccountRepository
 import com.jiyibi.app.core.domain.repository.CategoryRepository
-import com.jiyibi.app.core.domain.repository.DebtRepository
 import com.jiyibi.app.core.domain.repository.RecurringRepository
 import com.jiyibi.app.core.domain.repository.TransactionRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -36,17 +35,12 @@ class TransactionEditViewModel @Inject constructor(
     private val transactionRepository: TransactionRepository,
     private val accountRepository: AccountRepository,
     private val categoryRepository: CategoryRepository,
-    private val debtRepository: DebtRepository,
     private val recurringRepository: RecurringRepository,
-    private val ocrHandler: OcrResultHandler,
     private val accountPreferencesRepository: AccountPreferencesRepository,
     private val autoRecordPreferences: AutoRecordPreferencesRepository,
     private val merchantCategoryRepository: MerchantCategoryRepository,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
-
-    /** 暴露 OCR 处理器给 Screen 调用（拍照识别金额 + 分类猜测） */
-    val receiptOcr: OcrResultHandler get() = ocrHandler
 
     /** 从 nav arg 读取交易 id，-1 表示新建 */
     val transactionId: Long = savedStateHandle.get<Long>("transactionId") ?: -1L
@@ -193,41 +187,30 @@ class TransactionEditViewModel @Inject constructor(
         merchantCategoryRepository.learn(old.note, new.categoryId)
     }
 
-    /** 应用交易对账户余额的影响 */
+    /**
+     * 应用交易对账户余额的影响。
+     *
+     * 增减规则只在 [Transaction.balanceDeltas] 定义一处（支出扣、收入加、转账两边都动），
+     * 这里只负责把差值喂给账户仓库。
+     */
     private suspend fun applyAccountEffect(tx: Transaction) {
-        when (tx.type) {
-            TransactionType.EXPENSE -> accountRepository.adjustBalance(tx.accountId, -tx.amount)
-            TransactionType.INCOME -> accountRepository.adjustBalance(tx.accountId, tx.amount)
-            TransactionType.TRANSFER -> {
-                accountRepository.adjustBalance(tx.accountId, -tx.amount)
-                tx.toAccountId?.let { toId ->
-                    accountRepository.adjustBalance(toId, tx.amount)
-                }
-            }
+        tx.balanceDeltas().forEach { delta ->
+            accountRepository.adjustBalance(delta.accountId, delta.delta)
         }
     }
 
-    /** 撤销交易对账户余额的影响（用于编辑模式先撤销再应用） */
+    /** 撤销交易对账户余额的影响（用于编辑模式先撤销再应用），规则见 [Transaction.reversedBalanceDeltas] */
     private suspend fun reverseAccountEffect(tx: Transaction) {
-        when (tx.type) {
-            TransactionType.EXPENSE -> accountRepository.adjustBalance(tx.accountId, tx.amount)
-            TransactionType.INCOME -> accountRepository.adjustBalance(tx.accountId, -tx.amount)
-            TransactionType.TRANSFER -> {
-                accountRepository.adjustBalance(tx.accountId, tx.amount)
-                tx.toAccountId?.let { toId ->
-                    accountRepository.adjustBalance(toId, -tx.amount)
-                }
-            }
+        tx.reversedBalanceDeltas().forEach { delta ->
+            accountRepository.adjustBalance(delta.accountId, delta.delta)
         }
     }
 
     /** 删除交易（仅编辑模式可用）+ 撤销账户余额 */
     fun delete(id: Long, onDone: () -> Unit) {
         viewModelScope.launch {
-            // 撤销旧交易对账户余额的影响
-            val old = editingTransaction.value
-            if (old != null) reverseAccountEffect(old)
-            transactionRepository.delete(id)
+            // 删交易与回滚余额是同一个仓库方法，不存在「只删了交易忘了回滚」的写法
+            transactionRepository.deleteAndRevertBalance(id)
             // 自动记来的账在「最近自动记录」队列里还有一条 id：不一起清掉，
             // 那条记录会在列表里显示成空白行（队列按 id 查交易，查不到才自然消失）
             autoRecordPreferences.removeRecentId(id)
@@ -257,23 +240,6 @@ class TransactionEditViewModel @Inject constructor(
                     nextRunAt = nextRunAt,
                     autoRecord = true,
                     enabled = true,
-                ),
-            )
-        }
-    }
-
-    /** 保存分账（AA）生成的借贷记录：每位非"我"的参与人对应一条 Debt */
-    fun saveDebtRecord(counterparty: String, amount: Long, note: String) {
-        viewModelScope.launch {
-            debtRepository.upsert(
-                Debt(
-                    counterparty = counterparty,
-                    direction = DebtDirection.OWED_TO_ME,
-                    amount = amount,
-                    note = note,
-                    dueDate = null,
-                    settled = false,
-                    createdAt = System.currentTimeMillis(),
                 ),
             )
         }

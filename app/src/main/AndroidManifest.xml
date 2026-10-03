@@ -2,13 +2,16 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- 相机：用于拍照识别小票/发票 -->
-    <uses-permission android:name="android.permission.CAMERA" />
+    <!--
+        权限清单（2026-10 重构后）：
+        - 相机权限与 <uses-feature camera> 已删除：拍照识别小票的入口早已从记账页移除，
+          整条 OCR 链路不可达，保留 CAMERA 只会让用户在权限页看到一条用不上的敏感权限。
+        - 若将来恢复拍照记账，需同时补回 CAMERA 权限、<uses-feature> 与 ML Kit 依赖。
+    -->
     <!-- 通知：自动记账成功后的横幅提醒（Android 13+ 需运行时授权） -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- 网络：AI 智能识别（用户自行配置 API Key 后调用 OpenAI 兼容接口） -->
     <uses-permission android:name="android.permission.INTERNET" />
-    <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <application
         android:name=".JiYiBiApp"
@@ -82,7 +85,5 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/payment_accessibility_config" />
         </service>
-
-        <!-- 桌面小组件（Glance）将在 ui/widget 下声明 -->
     </application>
 </manifest>

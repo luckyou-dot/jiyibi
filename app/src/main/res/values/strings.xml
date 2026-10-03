@@ -7,17 +7,11 @@
     <string name="nav_budget">预算</string>
     <string name="nav_settings">我的</string>
 
-    <!-- 首页 -->
-    <string name="home_today_expense">今日支出</string>
-    <string name="home_month_budget">本月预算</string>
-    <string name="home_recent">最近交易</string>
-    <string name="home_quick_add">记一笔</string>
-
-    <!-- 通用 -->
-    <string name="action_save">保存</string>
-    <string name="action_cancel">取消</string>
-    <string name="action_delete">删除</string>
-    <string name="action_edit">编辑</string>
+    <!--
+        首页与通用操作的文案（home_* / action_*）已删除：这些字符串全部无引用，
+        界面上对应文案是直接写在 Compose 里的中文字面量。少一层「改了 strings.xml
+        却不见变化」的错觉，也避免 lint 报 UnusedResources。
+    -->
 
     <!-- 无障碍支付识别服务（系统设置页展示的名称与说明） -->
     <string name="payment_accessibility_label">记一笔 · 支付页面识别</string>

@@ -22,7 +22,18 @@ interface TransactionRepository {
     ): Flow<List<Transaction>>
 
     suspend fun upsert(transaction: Transaction): Long
-    suspend fun delete(id: Long)
+
+    /**
+     * 删除一笔交易，**并撤销它对账户余额的影响**（转账两个账户都回滚）。
+     *
+     * 刻意不提供「只删交易、不动余额」的删除方法：账户余额＝初始余额＋所有交易影响之和，
+     * 是全局不变量。历史上首页与搜索页的删除只删了交易、没回滚余额，直接导致余额虚高/虚低，
+     * 所以把「删交易」与「回滚余额」合并成同一个方法，让调用方**没有办法**漏掉回滚。
+     *
+     * 交易不存在（例如备份恢复后 id 变了、或重复点击）时静默返回。
+     */
+    suspend fun deleteAndRevertBalance(id: Long)
+
     suspend fun deleteAll()
 
     /** 按 id 批量取交易（供「自动记账」页展示最近自动记录） */

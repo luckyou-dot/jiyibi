@@ -106,19 +106,12 @@ dependencies {
     // WorkManager
     implementation(libs.androidx.work.runtime.ktx)
 
-    // ML Kit OCR
-    implementation(libs.mlkit.text.recognition)
-
-    // Glance Widgets
-    implementation(libs.androidx.glance.appwidget)
-    implementation(libs.androidx.glance.material3)
-
-    // Coil
-    implementation(libs.coil.compose)
-
-    // Vico Charts
-    implementation(libs.vico.compose)
-    implementation(libs.vico.compose.m3)
+    // 已移除的未使用依赖（2026-10 重构）：
+    //   ML Kit 中文 OCR —— 小票识别入口已从记账页删除，扫描链路整体不可达
+    //   Glance 桌面小组件 —— 从未实现（无 GlanceAppWidget / 无 receiver）
+    //   Coil 图片加载 —— 全项目零引用（年度海报用原生 Canvas 绘制）
+    //   Vico 图表 —— 全项目零引用（统计图表为手写 Canvas 实现）
+    // 如需恢复上述能力，从 git 历史或本文件的历史版本取回依赖坐标即可。
 
     // 单元测试（支付通知解析器等纯逻辑）
     testImplementation(libs.junit)

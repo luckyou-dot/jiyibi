@@ -194,7 +194,3 @@ fun paletteOf(theme: AppTheme): ThemePalette = when (theme) {
     AppTheme.SUNSET -> SunsetPalette
     AppTheme.MORANDI -> MorandiPalette
 }
-
-// 兼容旧代码的别名：保留 LightPrimary 等顶层变量指向默认主题（MINT）
-@Deprecated("供迁移期使用，新代码请通过 paletteOf(theme) 获取", level = DeprecationLevel.WARNING)
-val LightPrimary = MintPalette.lightPrimary

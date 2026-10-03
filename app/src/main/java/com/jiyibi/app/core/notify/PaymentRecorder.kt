@@ -10,6 +10,7 @@ import com.jiyibi.app.core.data.repository.MerchantCategoryRepository
 import com.jiyibi.app.core.domain.model.CategoryKind
 import com.jiyibi.app.core.domain.model.Transaction
 import com.jiyibi.app.core.domain.model.TransactionType
+import com.jiyibi.app.core.domain.model.balanceDeltas
 import com.jiyibi.app.core.domain.repository.AccountRepository
 import com.jiyibi.app.core.domain.repository.CategoryRepository
 import com.jiyibi.app.core.domain.repository.TransactionRepository
@@ -163,13 +164,10 @@ class PaymentRecorder @Inject constructor(
                 val newId = transactionRepository.upsert(transaction)
 
                 // 与手动记账保持一致：同步调整账户余额，否则账户余额会与流水脱节。
-                // 手动路径见 TransactionEditViewModel.applyAccountEffect。
-                val delta = if (parsed.type == TransactionType.EXPENSE) {
-                    -parsed.amountCents
-                } else {
-                    parsed.amountCents
+                // 增减规则统一由 Transaction.balanceDeltas 定义（支出扣、收入加）
+                transaction.balanceDeltas().forEach { balanceDelta ->
+                    accountRepository.adjustBalance(balanceDelta.accountId, balanceDelta.delta)
                 }
-                accountRepository.adjustBalance(account.id, delta)
 
                 // 记入复核队列，供「自动记账」页回溯与撤销
                 autoRecordPreferences.addRecentId(newId)

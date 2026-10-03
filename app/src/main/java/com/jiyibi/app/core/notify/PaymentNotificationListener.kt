@@ -2,9 +2,11 @@ package com.jiyibi.app.core.notify
 
 import android.app.Notification
 import android.content.ComponentName
+import android.os.Parcelable
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
+import androidx.core.os.BundleCompat
 import com.jiyibi.app.core.ai.AiPaymentParser
 import com.jiyibi.app.core.data.repository.UnmatchedNotificationRepository
 import dagger.hilt.android.AndroidEntryPoint
@@ -166,9 +168,19 @@ class PaymentNotificationListener : NotificationListenerService() {
      * 是否聊天会话通知：微信 / 支付宝的聊天消息用 MessagingStyle 发系统通知，
      * [Notification.EXTRA_MESSAGES] 存在即聊天——系统级标记，比文本启发可靠得多。
      * 聊天永远不是支付，AI 兜底与未识别队列都不必惊动。
+     *
+     * 用 [BundleCompat] 而不是 `Bundle.getParcelableArray(String)`：后者在 API 33+
+     * 已废弃（新签名要求传目标类型），BundleCompat 会按系统版本选择正确实现，
+     * 且不需要在本文件里写 `Build.VERSION.SDK_INT` 分支。
      */
-    private fun isChatConversation(notification: Notification): Boolean =
-        notification.extras?.getParcelableArray(Notification.EXTRA_MESSAGES) != null
+    private fun isChatConversation(notification: Notification): Boolean {
+        val extras = notification.extras ?: return false
+        return BundleCompat.getParcelableArray(
+            extras,
+            Notification.EXTRA_MESSAGES,
+            Parcelable::class.java,
+        ) != null
+    }
 
     override fun onDestroy() {
         super.onDestroy()
