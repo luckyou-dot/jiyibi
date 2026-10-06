@@ -145,6 +145,7 @@ class PaymentAccessibilityService : AccessibilityService() {
     private fun warnIfAccessRevoked() {
         runCatching {
             if (AccessibilityAccessHelper.isEnabled(this)) return
+            Log.w(PaymentRecorder.TAG, "无障碍服务已被系统关闭（强停 / 覆盖安装），已发出失效提醒")
             AutoRecordNotifier.notifyServiceDown(this, AutoRecordHealthChecker.check(this))
         }
     }

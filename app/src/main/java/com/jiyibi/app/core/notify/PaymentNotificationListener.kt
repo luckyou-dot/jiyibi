@@ -87,6 +87,7 @@ class PaymentNotificationListener : NotificationListenerService() {
         // 提醒文案与跳转由 AutoRecordNotifier 统一处理，与无障碍服务、巡检 Worker 共用同一条通知
         runCatching {
             if (NotificationAccessHelper.isEnabled(this)) return
+            Log.w(PaymentRecorder.TAG, "通知使用权已被系统关闭（强停 / 覆盖安装），已发出失效提醒")
             AutoRecordNotifier.notifyServiceDown(this, AutoRecordHealthChecker.check(this))
         }
     }

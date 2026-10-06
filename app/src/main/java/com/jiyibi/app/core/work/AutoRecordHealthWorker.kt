@@ -1,12 +1,14 @@
 package com.jiyibi.app.core.work
 
 import android.content.Context
+import android.util.Log
 import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.jiyibi.app.core.data.repository.AutoRecordPreferencesRepository
 import com.jiyibi.app.core.notify.AutoRecordHealthChecker
 import com.jiyibi.app.core.notify.AutoRecordNotifier
+import com.jiyibi.app.core.notify.PaymentRecorder
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.flow.first
@@ -48,10 +50,21 @@ class AutoRecordHealthWorker @AssistedInject constructor(
         }
 
         val health = AutoRecordHealthChecker.check(context)
+        // 打一行自检日志：`adb logcat -s JiYiBiNotify` 就能看清到底哪一项掉了，
+        // 不必让用户去系统设置里逐条核对
+        Log.i(
+            PaymentRecorder.TAG,
+            "自动记账自检：通知使用权=${health.notificationAccess} 无障碍=${health.accessibility} " +
+                "通知权限=${health.notificationsAllowed} 省电白名单=${health.batteryUnrestricted}",
+        )
         if (health.captureIssues().isEmpty()) {
             // 已恢复：撤掉历史提醒，避免用户误以为还坏着
             AutoRecordNotifier.clearServiceDown(context)
         } else {
+            Log.w(
+                PaymentRecorder.TAG,
+                "自动记账不可用，缺项=${health.captureIssues().joinToString()}，已发出失效提醒",
+            )
             AutoRecordNotifier.notifyServiceDown(context, health)
         }
         // 读系统设置不会失败；即便异常也没必要重试打扰用户
