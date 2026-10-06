@@ -34,11 +34,11 @@ private val Context.merchantCategoryDataStore by
  * [com.jiyibi.app.core.notify.PaymentRecorder.resolveCategory]）。
  *
  * ## 为什么用 DataStore 而不是 Room
- * 学习表是纯派生的辅助数据：丢了只会退化为「按静态关键词表猜分类」，不影响账目本身。
- * 而写进 Room 需要给表加字段 + 提版本号 + 写 Migration（本项目已禁用
- * `fallbackToDestructiveMigration()`，漏写 Migration 会让数据库打不开，见
- * [com.jiyibi.app.core.database.AppDatabase.MIGRATIONS]）。用 DataStore 承载派生数据，
- * 既避开一次库升级的风险，也让数据所有权的边界更清楚：**交易账目在 Room，偏好与派生映射在 DataStore**。
+ * 这张表是纯派生的辅助数据，丢了也只是退化为猜测，放在 DataStore 可以省掉一次数据库升级；
+ * 而 Room 侧的项目约定是**每次 schema 变更都必须显式写 Migration**（见
+ * [com.jiyibi.app.core.database.AppDatabase.MIGRATIONS]，本项目刻意不用
+ * `fallbackToDestructiveMigration()`，缺 Migration 会启动失败而非清库），
+ * 辅助数据不值得为它占用一次迁移配额。
  */
 @Singleton
 class MerchantCategoryRepository @Inject constructor(

@@ -40,8 +40,8 @@ data class UnmatchedNotification(
  * 「看得到哪条没识别」，不必连电脑抓日志。
  *
  * ## 设计
- * - 与 [AutoRecordPreferencesRepository] 同样的考量：用 DataStore 而非加表字段，
- *   避免 Room 破坏性迁移清库；
+ * - 用 DataStore 而非加表字段：本表是纯派生的辅助数据，丢了不影响账目，
+ *   不值得占用一次 Room 迁移配额（项目约定见 [AppDatabase.MIGRATIONS]）；
  * - 条目以 JSON 数组序列化存单个 String（DataStore 只能存原语）；
  * - 按「包名+标题+正文」去重：同一条通知被系统重复投递 / 更新时，
  *   只刷新时间并挪到队首，不重复占位。
