@@ -17,17 +17,19 @@ import kotlinx.coroutines.flow.first
  * 自动记账自检 Worker：定期确认「通知使用权 + 无障碍服务」还在，掉线就提醒用户。
  *
  * ## 为什么需要它
- * 系统在**强停应用**（ROM 的「清理后台」、划掉最近任务卡片）或**覆盖安装**后，
- * 会关闭本应用的无障碍服务与通知使用权，而且**不会告诉用户**。
+ * 系统在**强停应用**（ROM 的「清理后台」、划掉最近任务卡片）后会关闭本应用的
+ * 无障碍服务与通知使用权，而且**不会告诉用户**。
  * 之前的唯一现象是"支付了但没记账"，用户往往过几天才发现。
  * 这个 Worker 每 [AutoRecordHealthScheduler.PERIODIC_HOURS] 小时查一次，
  * 掉线时发一条带「去开启无障碍」按钮的通知。
  *
  * ## 能力边界（必须说清楚）
- * - 强停后 WorkManager 本身也跑不了，直到用户**再次打开 App**；因此这条巡检
- *   是"尽力而为"的第二道网，主要覆盖 ROM 清理、系统升级等进程还活着的场景；
- * - 真正即时的提醒来自两个服务自身的解绑回调
- *   （`PaymentAccessibilityService.onUnbind` / `PaymentNotificationListener.onListenerDisconnected`）。
+ * - 进程真被系统收走、且用户一直不开 App 时，WorkManager 也就跑不了 —— 这条巡检
+ *   是"尽力而为"的第二道网，覆盖 App 启动后的持续存活期；
+ * - **真正即时的提醒**来自两个服务自身的解绑回调
+ *   （`PaymentAccessibilityService.onUnbind` / `PaymentNotificationListener.onListenerDisconnected`）；
+ * - **撤销**那条失效提醒不靠这里：巡检只在进程启动时入队，进程一直活着时不会重跑，
+ *   所以由 `AutoRecordNotifier.reconcileServiceDown` 在用户回到前台的时刻当场收尾。
  *
  * ## 什么时候不打扰
  * - 用户自己关掉了自动记账开关 → 直接撤掉提醒、不巡检；

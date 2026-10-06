@@ -31,7 +31,7 @@ private val Context.merchantCategoryDataStore by
  * ## 为什么存 id 而不是分类名
  * 分类名可被用户随意重命名，存名字会在改名后失效；存 id 则天然跟随改名。
  * 分类被删除时，读取端会因查不到该 id 而自动回退到静态关键词表（见
- * [com.jiyibi.app.core.notify.PaymentNotificationListener.resolveCategoryId]）。
+ * [com.jiyibi.app.core.notify.PaymentRecorder.resolveCategory]）。
  *
  * ## 为什么用 DataStore 而不是 Room
  * 学习表是纯派生的辅助数据：丢了只会退化为「按静态关键词表猜分类」，不影响账目本身。
