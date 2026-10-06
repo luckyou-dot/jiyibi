@@ -82,6 +82,13 @@ class PaymentNotificationListener : NotificationListenerService() {
         // 激进 ROM（省电策略）会回收监听服务且不一定主动重绑，
         // 主动 requestRebind 能显著提高存活率；用户主动撤销授权时系统会忽略此请求。
         requestRebind(ComponentName(this, PaymentNotificationListener::class.java))
+        // 复查系统设置：授权真的没了（强停 / 覆盖安装 / 用户关闭）就提醒用户。
+        // 系统不会告知用户这件事，用户只会觉得"支付了但没记账"。
+        // 提醒文案与跳转由 AutoRecordNotifier 统一处理，与无障碍服务、巡检 Worker 共用同一条通知
+        runCatching {
+            if (NotificationAccessHelper.isEnabled(this)) return
+            AutoRecordNotifier.notifyServiceDown(this, AutoRecordHealthChecker.check(this))
+        }
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification?) {

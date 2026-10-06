@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import com.jiyibi.app.core.data.DefaultBudgetProvisioner
+import com.jiyibi.app.core.work.AutoRecordHealthScheduler
 import com.jiyibi.app.core.work.RecurringScheduler
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
@@ -19,6 +20,7 @@ import kotlinx.coroutines.launch
  * - 触发 Hilt 依赖注入图初始化
  * - 配置 WorkManager（用于记账提醒、周期性记账等后台任务）
  * - 启动周期性记账 Worker 调度
+ * - 启动自动记账健康巡检（无障碍 / 通知使用权被系统关掉时提醒用户）
  * - 预置默认月度总预算（¥1200）
  */
 @HiltAndroidApp
@@ -29,6 +31,9 @@ class JiYiBiApp : Application(), Configuration.Provider {
 
     @Inject
     lateinit var recurringScheduler: RecurringScheduler
+
+    @Inject
+    lateinit var autoRecordHealthScheduler: AutoRecordHealthScheduler
 
     @Inject
     lateinit var defaultBudgetProvisioner: DefaultBudgetProvisioner
@@ -45,6 +50,10 @@ class JiYiBiApp : Application(), Configuration.Provider {
         super.onCreate()
         // 启动周期性记账轮询（每 15 分钟检查一次到期规则）
         recurringScheduler.schedule()
+        // 自动记账自检：周期巡检 + 本次启动立刻查一次。
+        // 系统在强停应用 / 覆盖安装后会关闭无障碍与通知使用权，这里是唯一的告知渠道
+        autoRecordHealthScheduler.schedulePeriodic()
+        autoRecordHealthScheduler.checkNow()
         // 预置本月默认月度总预算（¥1200），使预算页与首页预算进度立即可见
         appScope.launch { defaultBudgetProvisioner.ensureCurrentMonthTotalBudget() }
     }

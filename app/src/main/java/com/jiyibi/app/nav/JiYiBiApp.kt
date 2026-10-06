@@ -71,11 +71,15 @@ private const val TAB_TRANSITION_MS = 300
  *
  * @param pendingEditTransactionId 自动记账提醒通知点击携带的交易 id（-1 = 无），
  *                                 导航一次后由 [onPendingEditConsumed] 消费掉
+ * @param pendingOpenAutoRecord    「自动记账已失效」提醒点击携带的标记：要求直达
+ *                                 「自动记账」页（那里有自检清单与一键修复入口）
  */
 @Composable
 fun JiYiBiApp(
     pendingEditTransactionId: Long = -1L,
     onPendingEditConsumed: () -> Unit = {},
+    pendingOpenAutoRecord: Boolean = false,
+    onPendingOpenAutoRecordConsumed: () -> Unit = {},
 ) {
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
@@ -88,6 +92,14 @@ fun JiYiBiApp(
                 launchSingleTop = true
             }
             onPendingEditConsumed()
+        }
+    }
+
+    // 点击「自动记账已失效」提醒 → 直达自动记账页（权限掉线时用户要做的第一件事）
+    LaunchedEffect(pendingOpenAutoRecord) {
+        if (pendingOpenAutoRecord) {
+            navController.navigate(Routes.AUTO_RECORD) { launchSingleTop = true }
+            onPendingOpenAutoRecordConsumed()
         }
     }
 

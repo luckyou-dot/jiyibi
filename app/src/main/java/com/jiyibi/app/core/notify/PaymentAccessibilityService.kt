@@ -129,7 +129,24 @@ class PaymentAccessibilityService : AccessibilityService() {
 
     override fun onUnbind(intent: Intent?): Boolean {
         pendingRead?.let(mainHandler::removeCallbacks)
+        // 服务被系统解绑时（ROM 清理后台、覆盖安装、用户手动关闭）当场提醒：
+        // 这是进程还活着时最及时的一次告知，比等 6 小时后的巡检强得多。
+        // 注意：App 无法自行恢复无障碍授权，只能引导用户去系统设置重开
+        warnIfAccessRevoked()
         return super.onUnbind(intent)
+    }
+
+    /**
+     * 解绑后确认授权是否真的没了，是则发「自动记账已失效」通知。
+     *
+     * 必须复查系统设置：解绑也可能是系统为重建服务绑定而发生的正常抖动，
+     * 此时 `enabled_accessibility_services` 里仍然有本服务，不该打扰用户。
+     */
+    private fun warnIfAccessRevoked() {
+        runCatching {
+            if (AccessibilityAccessHelper.isEnabled(this)) return
+            AutoRecordNotifier.notifyServiceDown(this, AutoRecordHealthChecker.check(this))
+        }
     }
 
     override fun onDestroy() {

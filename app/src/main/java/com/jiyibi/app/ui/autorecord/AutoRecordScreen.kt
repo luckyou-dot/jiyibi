@@ -26,10 +26,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.HelpOutline
-import androidx.compose.material.icons.filled.AccessibilityNew
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Category
-import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material3.AlertDialog
@@ -77,8 +75,7 @@ import com.jiyibi.app.core.designsystem.theme.ExpenseRed
 import com.jiyibi.app.core.designsystem.theme.IncomeGreen
 import com.jiyibi.app.core.domain.model.TransactionType
 import com.jiyibi.app.core.domain.model.centsToYuan
-import com.jiyibi.app.core.notify.AccessibilityAccessHelper
-import com.jiyibi.app.core.notify.NotificationAccessHelper
+import com.jiyibi.app.core.notify.AutoRecordHealthChecker
 import com.jiyibi.app.core.notify.PaymentPackages
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -106,28 +103,19 @@ fun AutoRecordScreen(
     val aiConfig by viewModel.aiConfig.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
-    // 通知使用权不由 App 控制，只能读系统设置；返回本页时重新判定
-    var accessGranted by remember { mutableStateOf(NotificationAccessHelper.isEnabled(context)) }
-    // 无障碍服务同理：从系统设置返回后重新判定
-    var accessibilityGranted by remember { mutableStateOf(AccessibilityAccessHelper.isEnabled(context)) }
+    // 前置条件（通知使用权 / 无障碍 / 通知权限 / 省电白名单）全部由系统设置决定，
+    // App 无法自行开关；从系统设置页返回本页时重新判定一次
+    var health by remember { mutableStateOf(AutoRecordHealthChecker.check(context)) }
     LifecycleResumeEffect(Unit) {
-        accessGranted = NotificationAccessHelper.isEnabled(context)
-        accessibilityGranted = AccessibilityAccessHelper.isEnabled(context)
+        health = AutoRecordHealthChecker.check(context)
         onPauseOrDispose { }
     }
 
-    // Android 13+ 弹横幅提醒还需要运行时通知权限（系统设置页回来后一并刷新）
-    var notifPermissionGranted by remember {
-        mutableStateOf(hasNotificationPermission(context))
-    }
+    // Android 13+ 弹横幅提醒还需要运行时通知权限；授权结果并入自检状态
     val notifPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
-    ) { granted ->
-        notifPermissionGranted = granted || hasNotificationPermission(context)
-    }
-    LifecycleResumeEffect(Unit) {
-        notifPermissionGranted = hasNotificationPermission(context)
-        onPauseOrDispose { }
+    ) { _ ->
+        health = AutoRecordHealthChecker.check(context)
     }
 
     Scaffold(
@@ -154,20 +142,40 @@ fun AutoRecordScreen(
             ),
             verticalArrangement = Arrangement.spacedBy(Spacing.m),
         ) {
+            // 顺序即信息优先级：先决定"要不要用"，再看"能不能用"，最后才是增强项
             item {
-                PermissionCard(
-                    granted = accessGranted,
-                    onOpenSettings = {
-                        runCatching { context.startActivity(NotificationAccessHelper.settingsIntent()) }
-                    },
+                SwitchCard(
+                    enabled = state.enabled,
+                    onToggle = viewModel::setEnabled,
                 )
             }
 
             item {
-                AccessibilityCard(
-                    granted = accessibilityGranted,
-                    onOpenSettings = {
-                        runCatching { context.startActivity(AccessibilityAccessHelper.settingsIntent()) }
+                HealthCheckCard(
+                    health = health,
+                    autoRecordEnabled = state.enabled,
+                    onOpenNotificationAccess = {
+                        runCatching {
+                            context.startActivity(AutoRecordHealthChecker.notificationAccessSettingsIntent())
+                        }
+                    },
+                    onOpenAccessibility = {
+                        runCatching {
+                            context.startActivity(AutoRecordHealthChecker.accessibilitySettingsIntent())
+                        }
+                    },
+                    onRequestNotificationPermission = {
+                        notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    },
+                    onOpenBatterySettings = {
+                        runCatching {
+                            context.startActivity(AutoRecordHealthChecker.batterySettingsIntent())
+                        }
+                    },
+                    onOpenAppDetails = {
+                        runCatching {
+                            context.startActivity(AutoRecordHealthChecker.appDetailsIntent(context))
+                        }
                     },
                 )
             }
@@ -177,24 +185,6 @@ fun AutoRecordScreen(
                     config = aiConfig,
                     onSave = viewModel::saveAiConfig,
                 )
-            }
-
-            item {
-                SwitchCard(
-                    enabled = state.enabled,
-                    onToggle = viewModel::setEnabled,
-                )
-            }
-
-            // Android 13+ 未授通知权限时，自动记账成功的横幅提醒弹不出来
-            if (!notifPermissionGranted) {
-                item {
-                    NotificationPermissionCard(
-                        onRequest = {
-                            notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                        },
-                    )
-                }
             }
 
             item {
@@ -243,72 +233,6 @@ fun AutoRecordScreen(
             }
 
             item { TuningTipCard() }
-        }
-    }
-}
-
-/** 通知使用权状态卡：未授权时给出跳转入口 */
-@Composable
-private fun PermissionCard(granted: Boolean, onOpenSettings: () -> Unit) {
-    UnifiedCard(
-        modifier = Modifier.fillMaxWidth(),
-        variant = UnifiedCardVariant.ELEVATED,
-        cornerRadius = Corner.large,
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                modifier = Modifier
-                    .size(40.dp)
-                    .clip(CircleShape)
-                    .background(
-                        if (granted) {
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
-                        } else {
-                            BudgetAmber.copy(alpha = 0.18f)
-                        },
-                    ),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    imageVector = if (granted) {
-                        Icons.Filled.NotificationsActive
-                    } else {
-                        Icons.Filled.NotificationsOff
-                    },
-                    contentDescription = null,
-                    tint = if (granted) MaterialTheme.colorScheme.primary else BudgetAmber,
-                )
-            }
-            Spacer(Modifier.width(Spacing.m))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    "通知使用权",
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.Medium,
-                )
-                Text(
-                    if (granted) "已开启，可以自动记账了" else "未开启，自动记账不会生效",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (granted) {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    } else {
-                        ExpenseRed
-                    },
-                )
-            }
-        }
-
-        if (!granted) {
-            Spacer(Modifier.height(Spacing.s))
-            Text(
-                "这一项不是普通权限，系统要求你去设置里手动打开。点下面的按钮会跳到「通知使用权」列表，找到「记一笔」并打开即可。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(Spacing.s))
-            Button(onClick = onOpenSettings, modifier = Modifier.fillMaxWidth()) {
-                Text("去系统设置开启")
-            }
         }
     }
 }
@@ -545,120 +469,6 @@ private fun AiCard(config: AiConfig, onSave: (AiConfig) -> Unit) {
             modifier = Modifier.fillMaxWidth(),
         ) {
             Text("保存 AI 配置")
-        }
-    }
-}
-
-/**
- * 无障碍支付页面识别卡（可选增强）。
- *
- * 通知监听有个天然盲区：**正在微信 / 支付宝里扫码、转账时**，支付发生在前台，
- * 系统不会给正在使用的 App 推通知，监听器收不到事件。无障碍服务在支付成功
- * 页面出现时当场读屏记账，补上这个场景。可选开关：不开也能用通知方式记。
- */
-@Composable
-private fun AccessibilityCard(granted: Boolean, onOpenSettings: () -> Unit) {
-    UnifiedCard(
-        modifier = Modifier.fillMaxWidth(),
-        variant = UnifiedCardVariant.ELEVATED,
-        cornerRadius = Corner.large,
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                modifier = Modifier
-                    .size(40.dp)
-                    .clip(CircleShape)
-                    .background(
-                        if (granted) {
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.12f)
-                        },
-                    ),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    Icons.Filled.AccessibilityNew,
-                    contentDescription = null,
-                    tint = if (granted) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                )
-            }
-            Spacer(Modifier.width(Spacing.m))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    "支付页面识别（无障碍增强）",
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.Medium,
-                )
-                Text(
-                    if (granted) "已开启，扫码 / 转账支付当场记账" else "可选：补足通知抓不到的主动支付场景",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-
-        Spacer(Modifier.height(Spacing.s))
-        Text(
-            "你正在微信 / 支付宝里扫码、转账时，付款过程发生在前台，系统不会推送通知，" +
-                "通知监听抓不到。开启本服务后，支付成功页面出现时会读取屏幕上的金额与商户当场记账。" +
-                "只识别微信 / 支付宝的支付页面，不读取其他内容。",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-
-        if (!granted) {
-            Spacer(Modifier.height(Spacing.s))
-            Button(onClick = onOpenSettings, modifier = Modifier.fillMaxWidth()) {
-                Text("去系统设置开启")
-            }
-        }
-    }
-}
-
-/** Android 13+ 通知权限引导卡：没权限时自动记账成功后弹不出横幅提醒 */
-@Composable
-private fun NotificationPermissionCard(onRequest: () -> Unit) {
-    UnifiedCard(
-        modifier = Modifier.fillMaxWidth(),
-        variant = UnifiedCardVariant.ELEVATED,
-        cornerRadius = Corner.large,
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                modifier = Modifier
-                    .size(40.dp)
-                    .clip(CircleShape)
-                    .background(BudgetAmber.copy(alpha = 0.18f)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    Icons.Filled.NotificationsOff,
-                    contentDescription = null,
-                    tint = BudgetAmber,
-                )
-            }
-            Spacer(Modifier.width(Spacing.m))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    "记账提醒没有通知权限",
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.Medium,
-                )
-                Text(
-                    "自动记账仍会正常入库，但成功后弹不出横幅提醒",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = ExpenseRed,
-                )
-            }
-        }
-        Spacer(Modifier.height(Spacing.s))
-        Button(onClick = onRequest, modifier = Modifier.fillMaxWidth()) {
-            Text("开启记账提醒")
         }
     }
 }
