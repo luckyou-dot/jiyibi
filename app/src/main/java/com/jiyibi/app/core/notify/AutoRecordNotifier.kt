@@ -127,6 +127,25 @@ object AutoRecordNotifier {
     }
 
     /**
+     * 用户**看得到自己已经把权限开回来**的时刻调用：两条抓取通道都就绪就顺手撤掉失效提醒。
+     *
+     * 两个调用点覆盖两条恢复路径：
+     * - `MainActivity.onResume`：从系统设置页返回（用户刚手动开完权限）；
+     * - 「自动记账」页读到自检结果时：自检卡就是用户确认"好了"的地方。
+     *
+     * 为什么不能只靠后台巡检撤：巡检只在**进程启动**时入队一次（`checkNow()`），
+     * 而用户从系统设置开完权限切回 App 时进程往往还活着 —— 那时没有任何路径会去撤通知，
+     * 于是"权限已开回来、自检卡已全绿、通知栏却还挂着失效提醒"。
+     * 这里在读权限的同一时刻收尾，用户所见与提醒状态就不会打架。
+     *
+     * **刻意不调用 `notifyServiceDown`**：缺项时保持沉默，让后台巡检按原有节奏提醒，
+     * 避免用户一进页面就挨一条通知。
+     */
+    fun reconcileServiceDown(context: Context, health: AutoRecordHealth) {
+        if (health.shouldClearAlert()) clearServiceDown(context)
+    }
+
+    /**
      * 发出「已自动记账」横幅通知，点击直达该笔交易的编辑页。
      *
      * @param transactionId  新入库交易 id（同时用作通知 id，天然一笔一条）

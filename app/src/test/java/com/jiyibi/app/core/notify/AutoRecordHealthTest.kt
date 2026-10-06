@@ -64,6 +64,31 @@ class AutoRecordHealthTest {
         assertEquals(listOf(AutoRecordIssue.NOTIFICATION_ACCESS), capture.captureIssues())
     }
 
+    /**
+     * 回归：**权限被开回来之后，那条「自动记账已失效」提醒必须撤得掉**。
+     *
+     * 真机踩过的坑：撤销此前只挂在后台巡检上，而 `checkNow()` 的 WorkManager 一次性任务
+     * 会被系统推迟（实测下次执行在数小时后）。于是用户照引导把无障碍开回来、自检卡已全绿，
+     * 通知栏那条失效提醒还挂着，看起来像没修好。
+     * 所以「用户看得见自检结果的时刻」要能凭这个判定当场撤销。
+     */
+    @Test
+    fun `恢复健康后应撤销失效提醒`() {
+        assertTrue("两条通道都在，旧的失效提醒该撤", health().shouldClearAlert())
+
+        // 只缺体验项（通知权限 / 电池白名单）不影响记账，同样该撤
+        assertTrue(health(notificationsAllowed = false, batteryUnrestricted = false).shouldClearAlert())
+    }
+
+    @Test
+    fun `任一抓取通道仍断着就不该撤提醒`() {
+        assertFalse(health(accessibility = false).shouldClearAlert())
+        assertFalse(health(notificationAccess = false).shouldClearAlert())
+        assertFalse(
+            health(notificationAccess = false, accessibility = false).shouldClearAlert(),
+        )
+    }
+
     private fun health(
         notificationAccess: Boolean = true,
         accessibility: Boolean = true,

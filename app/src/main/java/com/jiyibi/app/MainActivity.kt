@@ -11,6 +11,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jiyibi.app.core.designsystem.theme.JiYiBiTheme
+import com.jiyibi.app.core.notify.AutoRecordHealthChecker
 import com.jiyibi.app.core.notify.AutoRecordNotifier
 import com.jiyibi.app.nav.JiYiBiApp
 import com.jiyibi.app.ui.settings.ThemeViewModel
@@ -60,6 +61,22 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         // 通知用 FLAG_ACTIVITY_SINGLE_TOP 打开：App 已在前台时走这里而不是 onCreate
         consumeIntent(intent)
+    }
+
+    /**
+     * 回到前台时收尾一次自动记账的失效提醒。
+     *
+     * 用户按引导去系统设置开权限，回来走的正是这条路（从设置页返回是 onResume，
+     * 不一定重新经过「自动记账」页）。通道都就绪却还把「自动记账已失效」挂在通知栏里，
+     * 用户会以为没修好；而后台巡检的撤销动作真机上会被 WorkManager 推迟数小时。
+     *
+     * 读系统设置 + cancel 都是无弹窗的轻量调用，且 `reconcileServiceDown` 只在两条
+     * 抓取通道都就绪时才动手，不会误撤、也不会额外打扰。
+     */
+    override fun onResume() {
+        super.onResume()
+        val health = AutoRecordHealthChecker.check(this)
+        AutoRecordNotifier.reconcileServiceDown(this, health)
     }
 
     /** 从通知点击的 Intent 里取出跳转目标（一次性） */

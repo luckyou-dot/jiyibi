@@ -83,6 +83,22 @@ data class AutoRecordHealth(
         if (!notificationAccess) add(AutoRecordIssue.NOTIFICATION_ACCESS)
         if (!accessibility) add(AutoRecordIssue.ACCESSIBILITY)
     }
+
+    /**
+     * 该撤掉「自动记账已失效」提醒了吗。
+     *
+     * 判定只看**两条抓取通道**（与 [captureIssues] 同源，不把通知权限 / 电池白名单算进来）：
+     * 那两项缺失只影响提醒与保活，不该左右"失效提醒撤不撤"。
+     *
+     * ## 为什么需要这个显式判定
+     * 发提醒有三条路径（两个服务的解绑回调 + 后台巡检），撤销此前却只有巡检一条，
+     * 而 `AutoRecordHealthScheduler.checkNow()` 只在**进程启动**时入队（真机上约 0.2s 跑完）。
+     * 于是 **App 进程一直活着、只是被切回前台**时没有任何路径去撤那条通知：
+     * 用户从系统设置把权限开回来、切回 App，自检卡已全绿，通知栏那条失效提醒却还挂着，
+     * 看起来像没修好。所以用户**看得到自己已经把权限开回来**的时刻
+     * （App 回到前台、「自动记账」页读到自检结果）必须能当场撤销它。
+     */
+    fun shouldClearAlert(): Boolean = captureIssues().isEmpty()
 }
 
 /**

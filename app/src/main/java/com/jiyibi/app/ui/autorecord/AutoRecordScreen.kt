@@ -76,6 +76,7 @@ import com.jiyibi.app.core.designsystem.theme.IncomeGreen
 import com.jiyibi.app.core.domain.model.TransactionType
 import com.jiyibi.app.core.domain.model.centsToYuan
 import com.jiyibi.app.core.notify.AutoRecordHealthChecker
+import com.jiyibi.app.core.notify.AutoRecordNotifier
 import com.jiyibi.app.core.notify.PaymentPackages
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -104,10 +105,16 @@ fun AutoRecordScreen(
     val context = LocalContext.current
 
     // 前置条件（通知使用权 / 无障碍 / 通知权限 / 省电白名单）全部由系统设置决定，
-    // App 无法自行开关；从系统设置页返回本页时重新判定一次
+    // App 无法自行开关；从系统设置页返回本页时重新判定一次。
+    //
+    // 读到的同时顺手收尾「自动记账已失效」提醒：用户刚在系统设置里把权限开回来，
+    // 这一页就是他能看见"已经好了"的地方，提醒不能还挂在通知栏里。
+    // 撤销时机只放这里，不靠后台巡检——那个一次性任务真机上会被推迟数小时。
     var health by remember { mutableStateOf(AutoRecordHealthChecker.check(context)) }
-    LifecycleResumeEffect(Unit) {
+    LifecycleResumeEffect(state.enabled) {
         health = AutoRecordHealthChecker.check(context)
+        // 开关关着时本就不该有失效提醒（后台巡检在这条路径上会主动撤掉），无需处理
+        if (state.enabled) AutoRecordNotifier.reconcileServiceDown(context, health)
         onPauseOrDispose { }
     }
 
@@ -116,6 +123,7 @@ fun AutoRecordScreen(
         ActivityResultContracts.RequestPermission(),
     ) { _ ->
         health = AutoRecordHealthChecker.check(context)
+        AutoRecordNotifier.reconcileServiceDown(context, health)
     }
 
     Scaffold(
